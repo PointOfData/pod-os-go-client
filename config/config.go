@@ -1,0 +1,131 @@
+package config
+
+import "time"
+
+// Config holds configuration for a Pod-OS client
+type Config struct {
+	// Connection settings
+	Network          string // "tcp", "udp", "unix"
+	Host             string
+	Port             string
+	GatewayActorName string // Name of the gateway Actor. E.g. "zeroth.pod-os.com"
+
+	// Client identification (for ID message)
+	ClientName string // Name of the client connecting to the Actor (required for ID message)
+	Passcode   string // Optional passcode for connection identification
+
+	// Retry settings
+	RetryConfig RetryConfig
+
+	// Timeout settings
+	DialTimeout    time.Duration
+	ReceiveTimeout time.Duration
+	SendTimeout    time.Duration
+
+	// Connection pool settings
+	PoolConfig PoolConfig
+
+	// Streaming settings
+	// EnableStreaming controls whether to send STREAM ON message.
+	// nil (default) or true = enable streaming (STREAM ON), false = disable streaming.
+	EnableStreaming *bool
+
+	// Concurrent mode settings
+	// EnableConcurrentMode enables background receiver for MessageId-based response correlation.
+	// When enabled, multiple goroutines can send messages simultaneously without blocking each other.
+	// Default: false (synchronous send-then-receive pattern)
+	EnableConcurrentMode bool
+
+	// ResponseTimeout is the timeout for waiting for a response in concurrent mode.
+	// If not set, ReceiveTimeout is used. Only applies when EnableConcurrentMode is true.
+	ResponseTimeout time.Duration
+
+	// Reconnection settings for automatic recovery when gateway restarts or connection is lost.
+	// ReconnectConfig holds all reconnection-related configuration.
+	ReconnectConfig ReconnectConfig
+
+	// Optional: OpenTelemetry
+	EnableTracing bool
+	TracerName    string
+}
+
+// RetryConfig holds retry configuration
+type RetryConfig struct {
+	Retries            int
+	Backoff            time.Duration
+	BackoffMultiplier  float64
+	DisableBackoffCaps bool
+}
+
+// PoolConfig holds connection pool configuration
+type PoolConfig struct {
+	InitialCapacity int
+	MaxCapacity     int
+}
+
+// ReconnectConfig holds automatic reconnection configuration.
+// When enabled, the client will automatically attempt to reconnect
+// when the gateway restarts or the connection is lost.
+type ReconnectConfig struct {
+	// Enabled controls whether automatic reconnection is enabled.
+	// Default: true (nil pointer or true = enabled)
+	Enabled *bool
+
+	// MaxRetries is the maximum number of reconnection attempts.
+	// Default: 10. Set to 0 for unlimited retries.
+	MaxRetries int
+
+	// InitialBackoff is the initial backoff duration between reconnection attempts.
+	// Default: 1 second
+	InitialBackoff time.Duration
+
+	// BackoffMultiplier is the multiplier applied to backoff after each failed attempt.
+	// Default: 2.0
+	BackoffMultiplier float64
+
+	// MaxBackoff is the maximum backoff duration cap.
+	// Default: 60 seconds
+	MaxBackoff time.Duration
+}
+
+// DefaultReconnectConfig returns the default reconnection configuration.
+func DefaultReconnectConfig() ReconnectConfig {
+	enabled := true
+	return ReconnectConfig{
+		Enabled:           &enabled,
+		MaxRetries:        10,
+		InitialBackoff:    1 * time.Second,
+		BackoffMultiplier: 2.0,
+		MaxBackoff:        60 * time.Second,
+	}
+}
+
+// IsEnabled returns whether reconnection is enabled.
+// Returns true if Enabled is nil (default) or explicitly set to true.
+func (r *ReconnectConfig) IsEnabled() bool {
+	return r.Enabled == nil || *r.Enabled
+}
+
+// GetInitialBackoff returns the initial backoff or default of 1 second.
+func (r *ReconnectConfig) GetInitialBackoff() time.Duration {
+	if r.InitialBackoff <= 0 {
+		return 1 * time.Second
+	}
+	return r.InitialBackoff
+}
+
+// GetBackoffMultiplier returns the backoff multiplier or default of 2.0.
+func (r *ReconnectConfig) GetBackoffMultiplier() float64 {
+	if r.BackoffMultiplier <= 0 {
+		return 2.0
+	}
+	return r.BackoffMultiplier
+}
+
+// GetMaxBackoff returns the max backoff or default of 60 seconds.
+func (r *ReconnectConfig) GetMaxBackoff() time.Duration {
+	if r.MaxBackoff <= 0 {
+		return 60 * time.Second
+	}
+	return r.MaxBackoff
+}
