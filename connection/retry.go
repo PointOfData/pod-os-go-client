@@ -128,4 +128,3 @@ func NewRetry(
 
 	return &retry
 }
-

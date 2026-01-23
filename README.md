@@ -1,6 +1,6 @@
 # Pod-OS Client Library
 
-A standalone Go package for connecting to Pod-OS actors and working with the Pod-OS message protocol.
+A standalone Go package for connecting to Pod-OS Actors and working with the Pod-OS and Actor Information Platform message protocol.
 
 ## Features
 

@@ -34,4 +34,3 @@ func Resolve(network, address string) (string, *errors.GatewayDError) {
 		return "", errors.ErrNetworkNotSupported
 	}
 }
-

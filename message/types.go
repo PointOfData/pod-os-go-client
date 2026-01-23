@@ -76,8 +76,8 @@ type Envelope struct {
 	To         string // Recipient: <Actor Name>@<Gateway Name>
 	From       string // Sender: <Actor Name>@<Gateway Name>
 	Intent     Intent // Message intent type (from intents.go)
-	ClientName string // Unique client identifier for this connection
-	MessageId  string `podos:"_msg_id"`     // Unique message identifier for request/response correlation
+	ClientName string // Unique client identifier for this connection; required for GatewayId messages.
+	MessageId  string `podos:"_msg_id"`     // Unique message identifier for request/response correlation; optional.
 	Passcode   string `podos:"id:passcode"` // Optional passcode for authentication and authorization
 	UserName   string `podos:"id:user"`     // Optional user name for authentication and authorization
 }
@@ -96,12 +96,11 @@ type EventFields struct {
 	OwnerUniqueID     string         `podos:"owner_unique_id"` // Owner unique ID; required field if OwnerID is not provided. This is logically different from the Event owner Ids.
 	Timestamp         string         `podos:"timestamp"`       // Event timestamp POSIX timestamp in microseconds; formatted as a string with 6 decimal places with + or - sign relative to January 1, 1970 00:00:00 UTC
 	DateTime          DateTimeObject // Event date/time object
-	Location          string         `podos:"loc"`          // Location specification (e.g., "TERRA|47.6|-122.5")
-	LocationSeparator string         `podos:"loc_delim"`    // Location segment delimiter (default "|")
-	Type              string         `podos:"type"`         // Developer-defined event type string
-	CreateOwner       string         `podos:"create_owner"` // DEPRECATED "Y" or "N" - create owner event if not exists
-	Tags              []TagOutput    `podos:"tags"`         // Tags for the event; for use when processing a Response message.
-	Links             []LinkFields   `podos:"links"`        // Links for the event; for use when processing a Response message.
+	Location          string         `podos:"loc"`       // Location specification (e.g., "TERRA|47.6|-122.5")
+	LocationSeparator string         `podos:"loc_delim"` // Location segment delimiter (default "|")
+	Type              string         `podos:"type"`      // Developer-defined event type string
+	Tags              []TagOutput    `podos:"tags"`      // Tags for the event; for use when processing a Response message.
+	Links             []LinkFields   `podos:"links"`     // Links for the event; for use when processing a Response message.
 	PayloadData       PayloadFields  // Payload data; for use when processing a Response message so that Payload data is logically associated with the Event represented by EventFields.
 
 }
@@ -115,6 +114,7 @@ type PayloadFields struct {
 	Data     any      `podos:"data"`      // Payload data (string, []byte, or structured data)
 	DataType DataType `podos:"data_type"` // Bitmap indicating data format/compression
 	MimeType string   `podos:"mime"`      // MIME type (e.g., "application/json", "text/plain")
+	DataSize int      `podos:"_datasize"` // Data size in bytes
 }
 
 // =============================================================================
@@ -143,14 +143,14 @@ type NeuralMemoryFields struct {
 // GetEventOptions contains options for the GetEvent intent.
 // Retrieves a single Event Object by ID or UniqueId.
 type GetEventOptions struct {
-	SendData          bool    `podos:"send_data"`           // Return payload data with MIME type
+	SendData          bool    `podos:"send_data"`           // Return payload data with MIME type in the Response payload section
 	LocalIdOnly       bool    `podos:"local_id_only"`       // Return only local ID
 	TagFormat         NullInt `podos:"tag_format"`          // Tag output format (0 or 1)
-	RequestFormat     int     `podos:"request_format"`      // Output format (use 2)
+	RequestFormat     int     `podos:"request_format"`      // Output format (use 0 as default)
 	FirstLink         int     `podos:"first_link"`          // First link index to retrieve
 	LinkCount         int     `podos:"link_count"`          // Number of links to return
 	GetTags           bool    `podos:"get_tags"`            // Return tags for event
-	GetLinks          bool    `podos:"get_links"`           // Return links to event
+	GetLinks          bool    `podos:"get_links"`           // Send link information in the payload. Takes precedence over the SendData setting.
 	GetLinkTags       bool    `podos:"get_link_tags"`       // Return tags for links
 	GetTargetTags     bool    `podos:"get_target_tags"`     // Return tags for link targets
 	EventFacetFilter  string  `podos:"event_facet_filter"`  // Filter event tags by prefix
@@ -163,30 +163,30 @@ type GetEventOptions struct {
 // GetEventsForTagsOptions contains options for the GetEventsForTags intent.
 // Searches for events matching tag patterns.
 type GetEventsForTagsOptions struct {
-	EventPattern       string `podos:"event"`                    // Event key filter (FASTPATTERN)
-	EventPatternHigh   string `podos:"event_high"`               // Event key filter high range
-	IncludeBriefHits   bool   `podos:"include_brief_hits"`       // Include only event ID and unique ID
-	GetAllData         bool   `podos:"get_all_data"`             // Return all tag data unfiltered
-	FirstLink          int    `podos:"first_link"`               // First link to retrieve
-	LinkCount          int    `podos:"link_count"`               // Number of links to retrieve
-	EventsPerMessage   int    `podos:"events_per_message"`       // Events per reply message
-	StartResult        int    `podos:"start_result"`             // Paging: first result index
-	EndResult          int    `podos:"end_result"`               // Paging: last result index
-	MinEventHits       int    `podos:"min_event_hits"`           // Minimum tag matches required
-	CountOnly          bool   `podos:"count_only"`               // Return only match count
-	GetMatchLinks      bool   `podos:"get_match_links"`          // Retrieve links for matches
-	CountMatchLinks    bool   `podos:"count_match_links"`        // Return total links per event
-	GetLinkTags        bool   `podos:"get_link_tags"`            // Return tags for links
-	LinkTagFilter      string `podos:"link_tag_filter"`          // Regex filter for link tags
-	LinkedEventsFilter string `podos:"linked_events_tag_filter"` // Regex filter for target tags
-	LinkCategory       string `podos:"link_category"`            // Filter by link category
-	CreateOwner        bool   `podos:"create_owner"`             // DEPRECATED The “owner” ID, which filters responses to include only those for a specific owner event, can be created on the fly based on the owner event ID specified in the request. This may be necessary for databases where an owner ID is referenced by an event object, but the event object representing that owner is not present in the lo
-	Owner              string `podos:"owner"`                    // Owner event ID filter
-	NoEventData        bool   `podos:"no_event_data"`            // Don't send blob data
+	EventPattern        string `podos:"event"`                    // Event key filter (FASTPATTERN)
+	EventPatternHigh    string `podos:"event_high"`               // Event key filter high range
+	IncludeBriefHits    bool   `podos:"include_brief_hits"`       // Include only event ID and unique ID
+	GetAllData          bool   `podos:"get_all_data"`             // Get all tag and link data for all matching events, but disable the output of statistics for individual matching terms (equivalent to include_tag_stats=N)
+	FirstLink           int    `podos:"first_link"`               // First link to retrieve
+	LinkCount           int    `podos:"link_count"`               // Number of links to retrieve
+	EventsPerMessage    int    `podos:"events_per_message"`       // Events per reply message
+	StartResult         int    `podos:"start_result"`             // Paging: first result index
+	EndResult           int    `podos:"end_result"`               // Paging: last result index
+	MinEventHits        int    `podos:"min_event_hits"`           // Minimum tag matches required
+	CountOnly           bool   `podos:"count_only"`               // Return only match count
+	GetMatchLinks       bool   `podos:"get_match_links"`          // Include the number of links associated with a matching event object, filtered by “link_category” if present.
+	CountMatchLinks     bool   `podos:"count_match_links"`        // Return total links per event
+	GetLinkTags         bool   `podos:"get_link_tags"`            // Return tags for links
+	LinkTagFilter       string `podos:"link_tag_pattern"`         // If present, tags associated with a link event object attached to a matching event will be filtered according to the regular expression described by the header field.
+	LinkedEventsFilter  string `podos:"linked_events_tag_filter"` // Regex filter for target tags
+	LinkCategory        string `podos:"link_category"`            // Restrict any link results to the category name matching the string.This includes link output and/or link counts.
+	Owner               string `podos:"owner"`                    // If present, all links and tags are filtered such that only data owned by the specified event object will be returned.
+	OwnerUniqueID       string `podos:"owner_unique_id"`          // If present, all links and tags are filtered such that only data owned by the specified event object (by unique ID) will be returned.
+	GetEventObjectCount bool   `podos:"get_eo_count"`             // Special flag requesting the total number of event objects in the database, regardless of type. No other operation is performed. The return message header will contain: event_count=<N> where N is a numeric value.
 
 	// Search configuration (shared with SearchOptions)
-	BufferResults      bool   // Buffer all results in single reply
-	IncludeTagStats    bool   // Include tag statistics
+	BufferResults      bool   `podos:"buffer_results"`    // Y: Send all results in a single message, using the payload section of the message, N: Send results in a series of individual result messages
+	IncludeTagStats    bool   `podos:"include_tag_stats"` // Y: Includes statistics for each tag value that resulted in a match hit.
 	InvertHitTagFilter bool   // Invert the hit tag filter
 	HitTagFilter       string // Filter for result tags
 	BufferFormat       string // Output format: 0 = format a, 1 = format b
@@ -223,6 +223,8 @@ type LinkFields struct {
 	Type              string         `podos:"type"`            // Developer-defined event type string
 	OwnerUniqueID     string         `podos:"owner_unique_id"` // Owner unique ID; required field if OwnerID is not provided. This is logically different from the Event owner Ids.
 	OwnerID           string         `podos:"owner_event_id"`  // Owner ID; required field if OwnerUniqueID is not provided. This is logically different from the Event owner Ids.
+	Tags              []TagOutput    `podos:"tags"`            // Tags for this link; populated from _linktag records
+	TargetTags        []TagOutput    `podos:"target_tags"`     // Tags describing the target event; populated from _targettag records
 }
 
 // =============================================================================
@@ -234,8 +236,9 @@ type LinkFields struct {
 type ResponseFields struct {
 	Status              string         // Processing status: "OK" or "ERROR"
 	Message             string         // Status description or error message
-	TagCount            int            // Number of tags in response; used in Get and StoreEvent responses
-	LinkCount           int            // Total number of links found; used in Get and GetEventsForTags responses
+	TagCount            int            // Sum of Number of tags in response; used in Get and StoreEvent responses
+	LinkCount           int            // Sum of Total number of links found; used in Get and GetEventsForTags responses
+	LinkId              string         // Link ID returned by LinkEventResponse (link_event header field)
 	DateTime            DateTimeObject // Parsed event datetime
 	TotalEvents         int            // Total number of events found or stored
 	ReturnedEvents      int            // Number of events returned in response
@@ -252,11 +255,18 @@ type ResponseFields struct {
 	// GetEventsForTags-specific response fields
 	MatchTermCount int  // Number of different matching tag values; used in GetEventsForTags response
 	IsBuffered     bool // Whether response is buffered; used in GetEventsForTags response
+
+	// Brief hits response fields (for include_brief_hits=Y)
+	BriefHits []BriefHitRecord // Brief hit records when include_brief_hits=Y
 }
 
 type StoreBatchEventRecord struct {
-	Status  string `podos:"_status"`
-	Message string `podos:"_msg"`
+	Status         string `podos:"_status"`
+	Message        string `podos:"_msg"`
+	Hits           int    `podos:"_hits"`             //Total number of search term match hits across the event object
+	LinkCount      int    `podos:"_link_count"`       //Total number of links found across the event object. Requires count_match_links=Y in the Request header.
+	MatchTermCount int    `podos:"_match_term_count"` // Number of matching terms found for the matching event object. Requires include_tag_stats=Y in the Request header.
+	TagHits        int    `podos:"tag_stat"`          // Number of hits for each matching tag value. Format: <tag freq>:<tag value>.  Requires include_tag_stats=Y in the Request header. The frequency value is for the event object, not all event objects in the database.
 	EventFields
 }
 
@@ -264,6 +274,12 @@ type StoreLinkBatchEventRecord struct {
 	Status  string `podos:"_status"`
 	Message string `podos:"_msg"`
 	LinkFields
+}
+
+// BriefHitRecord represents a brief hit result from GetEventsForTags with include_brief_hits=Y
+type BriefHitRecord struct {
+	EventId   string // _brief_hit field value - the event ID
+	TotalHits int    // _hits field value - total number of search term match hits
 }
 
 // =============================================================================
@@ -465,6 +481,8 @@ type Tag struct {
 	Frequency int    // Count of occurrences
 	Key       string // Tag key/category
 	Value     any    // Supports string, int, float64, bool, map, slice, JSON objects
+	Timestamp string `podos:"timestamp"` // Event timestamp POSIX timestamp in microseconds; formatted as a string with 6 decimal places with + or - sign relative to January 1, 1970 00:00:00 UTC
+	Id        string // Tag's Event Object ID
 }
 
 // StringValue returns the Value as a string.
@@ -580,25 +598,6 @@ type TagOutput struct {
 	Category  string
 	Key       string
 	Value     string
-}
-
-// =============================================================================
-// LINK TYPES (Legacy compatibility)
-// =============================================================================
-
-// LinkList is a list of Links.
-type LinkList []Link
-
-// Link represents a connection between two events (legacy type).
-// Prefer using LinkFields for new code.
-type Link struct {
-	LinkEventA    string  // Event A ID (required if LinkUniqueIdA not provided)
-	LinkEventB    string  // Event B ID (required if LinkUniqueIdB not provided)
-	LinkUniqueIdA string  // Event A unique ID (required if LinkEventA not provided)
-	LinkUniqueIdB string  // Event B unique ID (required if LinkEventB not provided)
-	LinkStrengthA float64 // Link strength A->B (required)
-	LinkStrengthB float64 // Link strength B->A (required)
-	LinkCategory  string  // Link category (required)
 }
 
 // =============================================================================

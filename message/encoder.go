@@ -237,6 +237,31 @@ func formatFieldValue(fieldType reflect.Type, value interface{}) string {
 	return fmt.Sprintf("%v", value)
 }
 
+// FormatBatchTagsPayload formats a TagList into the payload format required for StoreBatchTags and UpdateBatchTags Intents.
+// Each tag is formatted as a newline-terminated record: frequency=key=value
+//
+// Parameters: tags TagList - The tags to format
+//
+// Returns: string - The formatted payload string ready for use in Message.PayloadData
+func FormatBatchTagsPayload(tags TagList) string {
+	if len(tags) == 0 {
+		return ""
+	}
+
+	var result strings.Builder
+	result.Grow(len(tags) * 50) // Estimate ~50 chars per tag
+
+	for i, tag := range tags {
+		if i > 0 {
+			result.WriteByte('\n')
+		}
+		// Format: frequency=key=value
+		result.WriteString(fmt.Sprintf("%d=%s=%s", tag.Frequency, tag.Key, SerializeTagValue(tag.Value)))
+	}
+
+	return result.String()
+}
+
 // formatTagsForBatchPayload formats tags for batch event payload
 // Tag Format: tag_0=freq:key=value <tab> tag_1=freq:key=value ...
 // The tag Value is serialized using SerializeTagValue() to support any type.
@@ -374,6 +399,30 @@ func EncodeMessage(msg *Message, conversationUuid string) (*SocketMessage, error
 				dataBytes = append(make([]byte, 0, len(str)), dataBytes...)
 				dataBytes = append(dataBytes, []byte(str)...) //encoding is utf-8
 			}
+		}
+	} else if msg.Intent.Name == IntentType.StoreBatchTags.Name || msg.Intent.Name == IntentType.UpdateBatchTags.Name {
+		// Handle StoreBatchTags and UpdateBatchTags Intent payload formatting
+		// Payload format: newline-terminated records of frequency=key=value
+		if payloadData != nil {
+			// Try type assertion for TagList first
+			if tags, ok := payloadData.(TagList); ok {
+				formattedPayload := FormatBatchTagsPayload(tags)
+				dataBytes = append(make([]byte, 0, len(formattedPayload)), dataBytes...)
+				dataBytes = append(dataBytes, []byte(formattedPayload)...) //encoding is utf-8
+			} else if tags, ok := payloadData.([]Tag); ok {
+				formattedPayload := FormatBatchTagsPayload(tags)
+				dataBytes = append(make([]byte, 0, len(formattedPayload)), dataBytes...)
+				dataBytes = append(dataBytes, []byte(formattedPayload)...) //encoding is utf-8
+			} else if str, ok := payloadData.(string); ok {
+				// Handle string payload for backward compatibility (manual formatting)
+				dataBytes = append(make([]byte, 0, len(str)), dataBytes...)
+				dataBytes = append(dataBytes, []byte(str)...) //encoding is utf-8
+			}
+		} else if msg.NeuralMemory != nil && len(msg.NeuralMemory.Tags) > 0 {
+			// Also check for tags in NeuralMemory.Tags
+			formattedPayload := FormatBatchTagsPayload(msg.NeuralMemory.Tags)
+			dataBytes = append(make([]byte, 0, len(formattedPayload)), dataBytes...)
+			dataBytes = append(dataBytes, []byte(formattedPayload)...) //encoding is utf-8
 		}
 	} else {
 		if payloadData != nil {

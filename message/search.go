@@ -140,4 +140,3 @@ type RangePattern struct {
 	HighValue string // High limit of matches
 	Inclusive bool   // Whether the range is inclusive
 }
-

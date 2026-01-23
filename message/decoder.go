@@ -143,16 +143,26 @@ func decodeEventFields(eventMap map[string]string, event *EventFields) (eventFie
 		event.UniqueId = uniqueId
 	} else if uniqueId, exists := eventMap["_unique_id"]; exists {
 		event.UniqueId = uniqueId
+	} else if uniqueId, exists := eventMap["tag:1:_unique_id"]; exists {
+		// this is a special case for the unique_id tag in GetEventsForTags response
+		event.UniqueId = uniqueId
 	}
+
 	if eventType, exists := eventMap["event_type"]; exists {
 		event.Type = eventType
 	} else if eventType, exists := eventMap["_type"]; exists {
+		event.Type = eventType
+	} else if eventType, exists := eventMap["type"]; exists {
 		event.Type = eventType
 	}
 	if user, exists := eventMap["_user"]; exists {
 		event.Owner = user
 	}
 	if owner, exists := eventMap["_owner_id"]; exists {
+		event.Owner = owner
+	} else if owner, exists := eventMap["owner"]; exists {
+		event.Owner = owner
+	} else if owner, exists := eventMap["_event_owner"]; exists {
 		event.Owner = owner
 	}
 
@@ -221,31 +231,31 @@ func decodeEventFields(eventMap map[string]string, event *EventFields) (eventFie
 
 func decodeLinkEventFields(linkMap map[string]string, link *LinkFields) (linkEventFields *LinkFields, ok bool) {
 	if eventId, exists := linkMap["_event_id"]; exists {
-		linkEventFields.Id = forceASCII(eventId)
+		link.Id = forceASCII(eventId)
 	} else if eventId, exists := linkMap["event_id"]; exists {
-		linkEventFields.Id = forceASCII(eventId)
+		link.Id = forceASCII(eventId)
 	}
 	if localId, exists := linkMap["local_id"]; exists {
-		linkEventFields.LocalId = localId
+		link.LocalId = localId
 	} else if eventLocalId, exists := linkMap["_event_local_id"]; exists {
-		linkEventFields.LocalId = eventLocalId
+		link.LocalId = eventLocalId
 	}
 
 	if uniqueId, exists := linkMap["unique_id"]; exists {
-		linkEventFields.UniqueId = uniqueId
+		link.UniqueId = uniqueId
 	} else if uniqueId, exists := linkMap["_unique_id"]; exists {
-		linkEventFields.UniqueId = uniqueId
+		link.UniqueId = uniqueId
 	}
 	if eventType, exists := linkMap["event_type"]; exists {
-		linkEventFields.Type = eventType
+		link.Type = eventType
 	} else if eventType, exists := linkMap["_type"]; exists {
-		linkEventFields.Type = eventType
+		link.Type = eventType
 	}
 	if user, exists := linkMap["_user"]; exists {
-		linkEventFields.Owner = user
+		link.Owner = user
 	}
 	if owner, exists := linkMap["_owner_id"]; exists {
-		linkEventFields.Owner = owner
+		link.Owner = owner
 	}
 
 	// Decode event date/time into Response.DateTime
@@ -285,13 +295,13 @@ func decodeLinkEventFields(linkMap map[string]string, link *LinkFields) (linkEve
 	} else if microsecond, exists := linkMap["_event_usec"]; exists {
 		eventDateTime.Microsecond, _ = strconv.Atoi(microsecond)
 	}
-	linkEventFields.DateTime = eventDateTime
+	link.DateTime = eventDateTime
 
 	// Decode timestamp from eventMap
 	if timestamp, exists := linkMap["timestamp"]; exists {
-		linkEventFields.Timestamp = timestamp
+		link.Timestamp = timestamp
 	} else if timestamp, exists := linkMap["_timestamp"]; exists {
-		linkEventFields.Timestamp = timestamp
+		link.Timestamp = timestamp
 	}
 
 	// Loop over coordinate n fields and concatenate the values into the Location string.
@@ -305,29 +315,16 @@ func decodeLinkEventFields(linkMap map[string]string, link *LinkFields) (linkEve
 			location += coord + "|"
 		}
 	}
-	linkEventFields.Location = strings.TrimRight(location, "|")
-	linkEventFields.LocationSeparator = "|"
+	link.Location = strings.TrimRight(location, "|")
+	link.LocationSeparator = "|"
 
-	return linkEventFields, true
+	return link, true
 }
 
 // transformMaptoMessageStruct transforms a header map into the fields of the Message struct
 // The header is verb-specific; Header information is specific to the Event and is dependent on the requested action.
+// Note: Intent is set by DecodeMessage using IntentFromMessageTypeAndCommand after calling this function.
 func transformHeaderMaptoMessageStruct(headerMap map[string]string, msg *Message) (m *Message, ok bool) {
-	// Map _command or _db_cmd to Intent if present (for response messages)
-	// Server responses may use either _command or _db_cmd to indicate the command type
-	command := ""
-	if cmd, exists := headerMap["_command"]; exists {
-		command = cmd
-	} else if cmd, exists := headerMap["_db_cmd"]; exists {
-		command = cmd
-	}
-	if command != "" {
-		if intent, found := IntentFromCommand(command); found {
-			msg.Intent = intent
-		}
-	}
-
 	// Initialize Response and Event for all response fields
 	resp := ensureResponse(msg)
 	event := ensureEvent(msg)
@@ -354,6 +351,10 @@ func transformHeaderMaptoMessageStruct(headerMap map[string]string, msg *Message
 		if totalEventHitsInt, err := strconv.Atoi(totalEventHits); err == nil {
 			resp.TotalEvents = totalEventHitsInt
 		}
+	} else if totalEventHits, exists := headerMap["_total_link_requests_found"]; exists {
+		if totalEventHitsInt, err := strconv.Atoi(totalEventHits); err == nil {
+			resp.TotalEvents = totalEventHitsInt
+		}
 	}
 
 	// Map action successful counts to StorageSuccessCount.
@@ -361,10 +362,18 @@ func transformHeaderMaptoMessageStruct(headerMap map[string]string, msg *Message
 		if storageSuccessCountInt, err := strconv.Atoi(storageSuccessCount); err == nil {
 			resp.StorageSuccessCount = storageSuccessCountInt
 		}
+	} else if storageSuccessCount, exists := headerMap["_links_ok"]; exists {
+		if storageSuccessCountInt, err := strconv.Atoi(storageSuccessCount); err == nil {
+			resp.StorageSuccessCount = storageSuccessCountInt
+		}
 	}
 
 	// Map action unsuccessful counts to StorageErrorCount.
 	if storageErrorCount, exists := headerMap["links_with_errors"]; exists {
+		if storageErrorCountInt, err := strconv.Atoi(storageErrorCount); err == nil {
+			resp.StorageErrorCount = storageErrorCountInt
+		}
+	} else if storageErrorCount, exists := headerMap["_links_with_errors"]; exists {
 		if storageErrorCountInt, err := strconv.Atoi(storageErrorCount); err == nil {
 			resp.StorageErrorCount = storageErrorCountInt
 		}
@@ -394,6 +403,22 @@ func transformHeaderMaptoMessageStruct(headerMap map[string]string, msg *Message
 		if totalLinksInt, err := strconv.Atoi(totalLinks); err == nil {
 			resp.LinkCount = totalLinksInt
 		}
+	} else if totalLinks, exists := headerMap["_link_count"]; exists {
+		if totalLinksInt, err := strconv.Atoi(totalLinks); err == nil {
+			resp.LinkCount = totalLinksInt
+		}
+	}
+
+	// Map tag count to Response.TagCount.
+	if tagCount, exists := headerMap["_tag_count"]; exists {
+		if tagCountInt, err := strconv.Atoi(tagCount); err == nil {
+			resp.TagCount = tagCountInt
+		}
+	}
+
+	// Map link_event to Response.LinkId for LinkEventResponse.
+	if linkEvent, exists := headerMap["link_event"]; exists {
+		resp.LinkId = linkEvent
 	}
 
 	// Map message ID to Envelope
@@ -416,6 +441,11 @@ func transformHeaderMaptoMessageStruct(headerMap map[string]string, msg *Message
 	if dataType, exists := headerMap["data_type"]; exists {
 		if dt, err := strconv.Atoi(dataType); err == nil {
 			payload.DataType = DataType(dt)
+		}
+	}
+	if dataSize, exists := headerMap["_datasize"]; exists {
+		if ds, err := strconv.Atoi(dataSize); err == nil {
+			payload.DataSize = ds
 		}
 	}
 
@@ -547,7 +577,6 @@ func DecodeMessage(message []byte) (*Message, error) {
 	}
 
 	// Set Envelope fields
-	// TODO: does the Intent come from the Message Type or from _command or _type in the header?
 	msg.To = string(message[toStart:toEnd])
 	msg.From = string(message[fromStart:fromEnd])
 
@@ -582,8 +611,6 @@ func DecodeMessage(message []byte) (*Message, error) {
 		setResponseError(&msg, errMsg)
 		return &msg, WrapDecodeError(ErrCodeDecodeInvalidMessageType, errMsg, err)
 	}
-	// Find the Intent.Name corresponding to this messageType
-
 	// Transform header map to Message struct; this handles the different header fields returned for each db_command type.
 	_, ok := transformHeaderMaptoMessageStruct(headerMap, &msg)
 	if !ok {
@@ -594,6 +621,30 @@ func DecodeMessage(message []byte) (*Message, error) {
 		return &msg, DecodeErrorWithField(ErrCodeDecodeHeaderTransformationFailed, errMsg, "header")
 	}
 
+	// Determine the Intent from messageType and _type/_command header field.
+	// For MEM_REQ (1000) or MEM_REPLY (1001), use the command from header to get the specific intent.
+	command := ""
+	if cmd, exists := headerMap["_command"]; exists {
+		command = cmd
+	} else if cmd, exists := headerMap["_type"]; exists {
+		command = cmd
+	} else if cmd, exists := headerMap["_db_cmd"]; exists {
+		command = cmd
+	}
+
+	intent, found := IntentFromMessageTypeAndCommand(messageType, command)
+	if !found {
+		// Fallback to messageType-only lookup for non-Neural Memory messages
+		intent, found = intentFromMessageTypeInt(messageType)
+		if !found {
+			errMsg := fmt.Sprintf("unknown messageType: %d with command: %s", messageType, command)
+			log.Printf("ERROR: %s", errMsg)
+			logRawMessage(message)
+			setResponseError(&msg, errMsg)
+			return &msg, DecodeErrorWithField(ErrCodeDecodeInvalidMessageType, errMsg, "messageType")
+		}
+	}
+	msg.Intent = intent
 	// Parse dataType, trimming null bytes
 	dataTypeStart := messageTypeEnd
 	dataTypeEnd := dataTypeStart + dataTypeLength
@@ -643,29 +694,58 @@ func DecodeMessage(message []byte) (*Message, error) {
 		} else {
 			msg.Payload.Data = string(payloadBytes)
 		}
-		// Determine the Intent from the messageType or _command header field.
-		// TODO: handle the Intent better; the payload processing relies on the original intent name; not the messageType in the response.
-		// if the message type is 1000 (database command), use the _command header field to determine the Intent.
-
-		intent, found := IntentFromMessageType(&msg.Event.Type)
-		if !found {
-			errMsg := fmt.Sprintf("unknown messageType: %d", messageType)
-			log.Printf("ERROR: %s", errMsg)
-			logRawMessage(message)
-			setResponseError(&msg, errMsg)
-			return &msg, DecodeErrorWithField(ErrCodeDecodeInvalidMessageType, errMsg, "messageType")
-		}
-		msg.Intent = intent
 
 		// Parse payload for specific intents
-		// list of Intent types for which we need to parse the payload: StoreBatchEvents, StoreBatchTags, StoreBatchLinks, LinkEvent, UnlinkEvent, GetEventsForTags, GetEvent.
+		// Handle both Request and Response intent names for payload parsing
 		switch msg.Intent.Name {
-		case "GetEventsForTags":
+		case "GetEvent", "GetEventResponse":
+			// For GetEventResponse, parse Tags and Links from payload if not BLOB data
+			// BLOB data is when SendData=true was in the request - the MimeType would be set
+			// and we leave the payload as-is
+			if msg.Payload.MimeType == "" || msg.Payload.MimeType == "application/octet-stream" {
+				// Parse structured data (Tags and Links)
+				tags, links, ok := parseGetEventPayload(&msg)
+				if ok {
+					if msg.Event != nil {
+						msg.Event.Tags = tags
+						msg.Event.Links = links
+					}
+				}
+			}
+			// If MimeType is set and it's not octet-stream, the data is BLOB - leave as-is
+
+		case "GetEventsForTags", "GetEventsForTagsResponse":
 			msg.Response.EventRecords, _ = parseGetEventsForTagsPayload(&msg)
-		case "StoreBatchEvents":
+
+		case "StoreBatchEvents", "StoreBatchEventsResponse":
 			msg.Response.StoreBatchEventRecords, _ = parseStoreBatchEventsPayload(&msg)
-		case "StoreBatchLinks":
+
+		case "StoreBatchLinks", "StoreBatchLinksResponse":
 			msg.Response.StoreLinkBatchEventRecords, _ = parseLinkEventBatchPayload(&msg)
+
+		case "StoreBatchTags", "StoreBatchTagsResponse":
+			// StoreBatchTagsResponse: Payload is unused per spec
+			// Header fields contain all response data (_status, _count, etc.)
+
+		case "UpdateBatchTags", "UpdateBatchTagsResponse":
+			// UpdateBatchTagsResponse: Payload is unused per spec
+			// Header fields contain all response data (_status, _count, etc.)
+
+		case "StoreEvent", "StoreEventResponse":
+			// StoreEventResponse: Payload is unused per spec
+			// Header fields contain all response data (_status, LocalId, _count, etc.)
+
+		case "LinkEvent", "LinkEventResponse":
+			// LinkEventResponse: Payload is unused per spec
+			// Header fields contain link_event (LinkFields.Id) and other response data
+
+		case "UnlinkEvent", "UnlinkEventResponse":
+			// UnlinkEventResponse: Payload is unused per spec
+			// Header fields contain all response data
+
+		case "ActorResponse":
+			// ActorResponse: General actor response, payload handling depends on actor type
+			// Payload data is already set above based on MimeType
 		}
 	}
 	return &msg, nil

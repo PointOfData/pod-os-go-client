@@ -243,4 +243,3 @@ func (c *ChannelPool) Len() int {
 func (c *ChannelPool) NumberOfConns() int {
 	return len(c.semaphore)
 }
-

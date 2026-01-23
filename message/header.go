@@ -58,11 +58,14 @@ func ConstructHeader(msg *Message, intent Intent, connectionIdUuid string) strin
 	case "StoreBatchEvents": // Batch Store Events
 		return StoreBatchEventsMessageHeader(msg) // VERIFIED: DO NOT CHANGE
 
-	case "BatchStoreTags": // Batch Store Tags
+	case "StoreBatchTags", "BatchStoreTags": // Batch Store Tags
 		return StoreBatchTagsMessageHeader(msg) // VERIFIED: DO NOT CHANGE
 
 	case "StoreBatchLinks": // Batch Link Events
 		return BatchLinkEventsMessageHeader(msg)
+
+	case "UpdateBatchTags": // Update Batch Tags
+		return UpdateBatchTagsMessageHeader(msg)
 
 	case "ActorStreamOff": // Stream Off
 		return GatewayStreamOffHeader(msg)
@@ -91,7 +94,9 @@ func GatewayIdentifyConnectionHeader(msg *Message) string {
 		_header.WriteString("id:user=" + msg.UserName + "\t")
 	}
 	_header.WriteString("id:name=" + msg.ClientName + "\t")
-	_header.WriteString("_msg_id=" + msg.MessageId)
+	if msg.MessageId != "" {
+		_header.WriteString("_msg_id=" + msg.MessageId)
+	}
 
 	return _header.String()
 }
@@ -106,7 +111,9 @@ func GatewayIdentifyConnectionHeader(msg *Message) string {
 // VERIFIED: DO NOT CHANGE FUNCTION SIGNATURE OR PARAMETERS
 func ActorHaltHeader(msg *Message) string {
 	var _header strings.Builder
-	_header.WriteString("_msg_id=" + msg.MessageId)
+	if msg.MessageId != "" {
+		_header.WriteString("_msg_id=" + msg.MessageId)
+	}
 	return _header.String()
 }
 
@@ -120,7 +127,9 @@ func ActorHaltHeader(msg *Message) string {
 // VERIFIED: DO NOT CHANGE FUNCTION SIGNATURE OR PARAMETERS
 func GatewayStreamOnHeader(msg *Message) string {
 	var _header strings.Builder
-	_header.WriteString("_msg_id=" + msg.MessageId)
+	if msg.MessageId != "" {
+		_header.WriteString("_msg_id=" + msg.MessageId)
+	}
 	return _header.String()
 }
 
@@ -128,13 +137,15 @@ func GatewayStreamOnHeader(msg *Message) string {
 //
 // Params:
 //
-// msg: The Message struct containing GatewayStreamOff fields. Required fields: ClientName.
+// msg: The Message struct containing GatewayStreamOff fields.
 //
 // Returns: string for header
 // VERIFIED: DO NOT CHANGE FUNCTION SIGNATURE OR PARAMETERS
 func GatewayStreamOffHeader(msg *Message) string {
 	var _header strings.Builder
-	_header.WriteString("_msg_id=" + msg.MessageId)
+	if msg.MessageId != "" {
+		_header.WriteString("_msg_id=" + msg.MessageId)
+	}
 	return _header.String()
 }
 
@@ -143,13 +154,15 @@ func GatewayStreamOffHeader(msg *Message) string {
 //
 // Params:
 //
-// msg: The Message struct containing ActorRequest fields. Required fields: ClientName.
+// msg: The Message struct containing ActorRequest fields.
 //
 // Returns: string for header
 func ActorRequestHeader(msg *Message) string {
 	var _header strings.Builder
 	_header.WriteString("_type=" + "status" + "\t")
-	_header.WriteString("_msg_id=" + msg.MessageId)
+	if msg.MessageId != "" {
+		_header.WriteString("_msg_id=" + msg.MessageId)
+	}
 	return _header.String()
 }
 
@@ -159,7 +172,7 @@ func ActorRequestHeader(msg *Message) string {
 //
 // Params:
 //
-// msg: The Message struct containing ActorEcho fields. Required fields: ClientName.
+// msg: The Message struct containing ActorEcho fields.
 //
 // Returns: string for header
 // VERIFIED: DO NOT CHANGE FUNCTION SIGNATURE OR PARAMETERS
@@ -173,41 +186,22 @@ func ActorEchoHeader(msg *Message) string {
 //
 // Params:
 //
-// msg: The Message struct containing StoreEvent fields. Required fields: ClientName.
-// Optional fields include Event.Owner, Event.UniqueId, Event.Type, Event.LocationSeparator,
-// Event.Location, Event.Timestamp, and Payload.MimeType.
-//
-// connectionIdUuid: The connection UUID (not used in header but passed for consistency).
+// msg: The Message struct containing StoreEvent fields.
 //
 // Returns: string for header
 // VERIFIED: DO NOT CHANGE FUNCTION SIGNATURE OR PARAMETERS
 func StoreEventMessageHeader(msg *Message) string {
-	var eventOwner string
-
-	// Construct the owner string.
-	switch eventOwner {
-	case "":
-		switch msg.Event.CreateOwner {
-		case "Y":
-			eventOwner = "create_owner=Y"
-		case "N":
-			eventOwner = "create_owner=N"
-		default:
-			eventOwner = "create_owner=Y"
-		}
-	case "$sys":
-		eventOwner = "owner=" + eventOwner + "\t"
-	default:
-		eventOwner = "owner=" + forceASCII(eventOwner) + "\t"
-	}
-
-	// Build the final string
 	var _header strings.Builder
 	_header.WriteString("_db_cmd=" + "store" + "\t")
 	if msg.Event.UniqueId != "" {
 		_header.WriteString("unique_id=" + msg.Event.UniqueId + "\t")
 	}
-	_header.WriteString(eventOwner)
+	if msg.Event.Id != "" {
+		_header.WriteString("event_id=" + forceASCII(msg.Event.Id) + "\t")
+	}
+	if msg.Event.Owner != "" {
+		_header.WriteString("owner=" + msg.Event.Owner + "\t")
+	}
 	if msg.Event.Timestamp != "" {
 		_header.WriteString("timestamp=" + msg.Event.Timestamp + "\t")
 	} else {
@@ -224,7 +218,9 @@ func StoreEventMessageHeader(msg *Message) string {
 	}
 
 	_header.WriteString("mime=" + msg.Payload.MimeType + "\t")
-	_header.WriteString("_msg_id=" + msg.MessageId)
+	if msg.MessageId != "" {
+		_header.WriteString("_msg_id=" + msg.MessageId)
+	}
 	return _header.String()
 }
 
@@ -237,8 +233,6 @@ func StoreEventMessageHeader(msg *Message) string {
 // Returns: string for header
 // VERIFIED: DO NOT CHANGE FUNCTION SIGNATURE OR PARAMETERS
 func StoreBatchEventsMessageHeader(msg *Message) string {
-
-	// Build the final string
 	var _header strings.Builder
 	_header.WriteString("_db_cmd=" + "store_batch" + "\t")
 	if msg.MessageId != "" {
@@ -251,36 +245,30 @@ func StoreBatchEventsMessageHeader(msg *Message) string {
 //
 // Params:
 //
-// msg: The Message struct containing BatchStoreTags fields. Required fields: ClientName.
-// Optional fields include Event.UniqueId, Event.Id, and Event.Owner.
-//
-// connectionIdUuid: The connection UUID (not used in header but passed for consistency).
+// msg: The Message struct containing BatchStoreTags fields.
+// Required fields: Event.Id OR Event.UniqueId, Event.Owner OR Event.OwnerUniqueID
+// Optional fields: MessageId
 //
 // Returns: string for header
 // VERIFIED: DO NOT CHANGE FUNCTION SIGNATURE OR PARAMETERS
 func StoreBatchTagsMessageHeader(msg *Message) string {
-	var eventOwner string
-
-	// Construct the owner string.
-	switch eventOwner {
-	case "":
-		eventOwner = "owner=$sys"
-	case "$sys":
-		eventOwner = "owner=$sys\t"
-	default:
-		eventOwner = "owner=" + eventOwner + "\t"
-	}
-
-	// Build the final string
 	var _header strings.Builder
 	_header.WriteString("_db_cmd=" + "tag_store_batch" + "\t")
 
+	// Event identifier: UniqueId OR Id (required)
 	if msg.Event.UniqueId != "" {
 		_header.WriteString("unique_id=" + msg.Event.UniqueId + "\t")
 	} else if msg.Event.Id != "" {
 		_header.WriteString("event_id=" + forceASCII(msg.Event.Id) + "\t")
 	}
-	_header.WriteString(eventOwner)
+
+	// Owner: Owner OR OwnerUniqueID (required)
+	if msg.Event.Owner != "" {
+		_header.WriteString("owner=" + msg.Event.Owner + "\t")
+	} else if msg.Event.OwnerUniqueID != "" {
+		_header.WriteString("owner_unique_id=" + msg.Event.OwnerUniqueID + "\t")
+	}
+
 	if msg.MessageId != "" {
 		_header.WriteString("_msg_id=" + msg.MessageId)
 	}
@@ -291,11 +279,7 @@ func StoreBatchTagsMessageHeader(msg *Message) string {
 //
 // Params:
 //
-// msg: The Message struct containing GetEvent fields. Required fields: ClientName.
-// Optional fields include Event.Id, Event.UniqueId, and NeuralMemory.GetEvent options.
-//
-// connectionIdUuid: The connection UUID (not used in header but passed for consistency).
-//
+// msg: The Message struct containing GetEvent fields.
 // Returns: string for header
 // VERIFIED: DO NOT CHANGE FUNCTION SIGNATURE OR PARAMETERS
 func GetEventMessageHeader(msg *Message) string {
@@ -304,6 +288,7 @@ func GetEventMessageHeader(msg *Message) string {
 
 	// Base command
 	header.WriteString("_db_cmd=get\t")
+	// future support for time and location implicit association with events (i.e., a contextual search -- what happened around a specific time and location?)
 	/* 	if msg.Event.Timestamp != "" {
 	   		header.WriteString("timestamp=" + msg.Event.Timestamp + "\t")
 	   	} else {
@@ -365,13 +350,12 @@ func GetEventMessageHeader(msg *Message) string {
 			header.WriteString("tag_filter=" + opts.TagFilter + "\t")
 		}
 
-		// Integer fields
-		if opts.TagFormat.Valid {
-			header.WriteString("tag_format=" + strconv.Itoa(opts.TagFormat.Value) + "\t")
-		}
-		if opts.RequestFormat == 2 {
-			header.WriteString("request_format=2\t")
-		}
+		// Set tag format to 0 as default
+		header.WriteString("tag_format=0\t") // TODO: a more detailed method is available in tag_format=1 (see documentation)
+
+		// Set format to 0 as default
+		header.WriteString("request_format=0\t")
+
 		if opts.FirstLink > 0 {
 			header.WriteString("first_link=" + strconv.Itoa(opts.FirstLink) + "\t")
 		}
@@ -380,7 +364,6 @@ func GetEventMessageHeader(msg *Message) string {
 		}
 	}
 
-	// Message ID (always last)
 	if msg.MessageId != "" {
 		header.WriteString("_msg_id=" + msg.MessageId)
 	}
@@ -393,10 +376,8 @@ func GetEventMessageHeader(msg *Message) string {
 //
 // Params:
 //
-// msg: The Message struct containing GetEventsForTags fields. Required fields: ClientName.
+// msg: The Message struct containing GetEventsForTags fields. Required fields: Event.Owner.
 // Optional fields include NeuralMemory.GetEventsForTags options.
-//
-// connectionIdUuid: The connection UUID (not used in header but passed for consistency).
 //
 // Returns: string for header
 // VERIFIED: DO NOT CHANGE FUNCTION SIGNATURE OR PARAMETERS
@@ -461,9 +442,6 @@ func GetEventsForTagMessageHeader(msg *Message) string {
 		if invertHitTagFilter {
 			header.WriteString("invert_hit_tag_filter=Y\t") // V
 		}
-		if opts.NoEventData {
-			header.WriteString("no_event_data=Y\t") // V
-		}
 
 		// String fields (only include when non-empty)
 		if opts.EventPattern != "" {
@@ -483,9 +461,8 @@ func GetEventsForTagMessageHeader(msg *Message) string {
 		}
 		if opts.Owner != "" {
 			header.WriteString("owner=" + forceASCII(opts.Owner) + "\t") //V
-		}
-		if opts.CreateOwner {
-			header.WriteString("create_owner=Y\t") // V
+		} else if opts.OwnerUniqueID != "" {
+			header.WriteString("owner_unique_id=" + opts.OwnerUniqueID + "\t")
 		}
 		if hitTagFilter != "" {
 			header.WriteString("hit_tag_filter=" + forceASCII(hitTagFilter) + "\t")
@@ -513,7 +490,11 @@ func GetEventsForTagMessageHeader(msg *Message) string {
 	}
 
 	// Buffer format (always include, defaults to "0")
-	header.WriteString("buffer_format=" + bufferFormat + "\t")
+	if bufferFormat != "" {
+		header.WriteString("buffer_format=" + bufferFormat + "\t")
+	} else {
+		header.WriteString("buffer_format=1\t")
+	}
 
 	// Message ID (always last)
 	if msg.MessageId != "" {
@@ -527,48 +508,35 @@ func GetEventsForTagMessageHeader(msg *Message) string {
 //
 // Params:
 //
-// msg: The Message struct containing LinkEvent fields. Required fields: ClientName.
-// Optional fields include Event.Owner, Event.CreateOwner, and NeuralMemory.Link fields.
-//
-// connectionIdUuid: The connection UUID (not used in header but passed for consistency).
+// msg: The Message struct containing LinkEvent fields. Required fields: Event.Owner, NeuralMemory.Link.
 //
 // Returns: string for header
 // VERIFIED: DO NOT CHANGE FUNCTION SIGNATURE OR PARAMETERS
 func LinkEventsMessageHeader(msg *Message) string {
-	var eventOwner string
-
-	switch eventOwner {
-	case "":
-		switch msg.Event.CreateOwner {
-		case "Y":
-			eventOwner = "create_owner=Y"
-		case "N":
-			eventOwner = "create_owner=N"
-		default:
-			eventOwner = "create_owner=Y"
-		}
-	case "$sys":
-		eventOwner = "owner=" + eventOwner + "\t"
-	default:
-		eventOwner = "owner=" + forceASCII(eventOwner) + "\t"
-	}
-
-	// Build the final string
 	var _header strings.Builder
 
 	_header.WriteString("_db_cmd=" + "link" + "\t")
-	_header.WriteString(eventOwner)
-	_header.WriteString("id:name=" + msg.ClientName + "\t")
+	// the following apply to the link creation event
+	if msg.Event.Id != "" {
+		_header.WriteString("event_id=" + forceASCII(msg.Event.Id) + "\t")
+	} else if msg.Event.UniqueId != "" {
+		_header.WriteString("unique_id=" + msg.Event.UniqueId + "\t")
+	}
+	if msg.Event.Owner != "" {
+		_header.WriteString("owner=" + msg.Event.Owner + "\t")
+	}
 	if msg.MessageId != "" {
 		_header.WriteString("_msg_id=" + msg.MessageId + "\t")
 	}
+
+	// The following apply to the link definition event
 	// Prefer UniqueIdA/UniqueIdB if not empty; otherwise use EventA.UniqueId/EventB.UniqueId
 	if msg.NeuralMemory.Link.UniqueIdA != "" && msg.NeuralMemory.Link.UniqueIdB != "" {
 		_header.WriteString("unique_id_a=" + msg.NeuralMemory.Link.UniqueIdA + "\t")
 		_header.WriteString("unique_id_b=" + msg.NeuralMemory.Link.UniqueIdB + "\t")
 	} else if msg.NeuralMemory.Link.EventA != "" && msg.NeuralMemory.Link.EventB != "" {
-		_header.WriteString("event_a=" + forceASCII(msg.NeuralMemory.Link.EventA) + "\t")
-		_header.WriteString("event_b=" + forceASCII(msg.NeuralMemory.Link.EventB) + "\t")
+		_header.WriteString("event_id_a=" + forceASCII(msg.NeuralMemory.Link.EventA) + "\t")
+		_header.WriteString("event_id_b=" + forceASCII(msg.NeuralMemory.Link.EventB) + "\t")
 	}
 
 	_header.WriteString("strength_a=" + strconv.FormatFloat(msg.NeuralMemory.Link.StrengthA, 'f', -1, 64) + "\t")
@@ -579,6 +547,11 @@ func LinkEventsMessageHeader(msg *Message) string {
 	_header.WriteString("type=" + msg.Event.Type + "\t")
 	_header.WriteString("mime=" + msg.Payload.MimeType + "\t")
 	_header.WriteString("timestamp=" + msg.Event.Timestamp + "\t")
+	if msg.NeuralMemory.Link.OwnerID != "" {
+		_header.WriteString("owner_event_id=" + msg.NeuralMemory.Link.OwnerID + "\t")
+	} else if msg.NeuralMemory.Link.OwnerUniqueID != "" {
+		_header.WriteString("owner_unique_id=" + msg.NeuralMemory.Link.OwnerUniqueID + "\t")
+	}
 
 	return _header.String()
 }
@@ -593,12 +566,10 @@ func LinkEventsMessageHeader(msg *Message) string {
 // Returns: string for header
 // VERIFIED: DO NOT CHANGE FUNCTION SIGNATURE OR PARAMETERS
 func BatchLinkEventsMessageHeader(msg *Message) string {
-
-	// Build the final string
 	var _header strings.Builder
 	_header.WriteString("_db_cmd=" + "link_batch" + "\t")
 	if msg.MessageId != "" {
-		_header.WriteString("_msg_id=" + msg.MessageId + "\t")
+		_header.WriteString("_msg_id=" + msg.MessageId)
 	}
 	return _header.String()
 }
@@ -608,43 +579,60 @@ func BatchLinkEventsMessageHeader(msg *Message) string {
 // Params:
 //
 // msg: The Message struct containing UnlinkEvent fields. Required fields: ClientName.
-// Optional fields include Event.UniqueId and Event.Owner.
-//
-// connectionIdUuid: The connection UUID (not used in header but passed for consistency).
+// Optional fields include Event.Id, Event.UniqueId, and Event.Owner.
 //
 // Returns: string for header
 // VERIFIED: DO NOT CHANGE FUNCTION SIGNATURE OR PARAMETERS
 func UnlinkEventsMessageHeader(msg *Message) string {
-	var eventOwner string
-
-	// Construct the owner string.
-	switch eventOwner {
-	case "":
-		switch msg.Event.CreateOwner {
-		case "Y":
-			eventOwner = "create_owner=Y"
-		case "N":
-			eventOwner = "create_owner=N"
-		default:
-			eventOwner = "create_owner=Y"
-		}
-	case "$sys":
-		eventOwner = "owner=" + eventOwner + "\t"
-	default:
-		eventOwner = "owner=" + forceASCII(eventOwner) + "\t"
-	}
-
-	// Build the final string
 	var _header strings.Builder
 	_header.WriteString("_db_cmd=" + "unlink" + "\t")
-	_header.WriteString(eventOwner)
-	_header.WriteString("event_id=" + forceASCII(msg.Event.Id) + "\t")
+	if msg.Event.Owner != "" {
+		_header.WriteString("owner=" + msg.Event.Owner + "\t")
+	}
+	if msg.Event.Id != "" {
+		_header.WriteString("event_id=" + forceASCII(msg.Event.Id) + "\t")
+	} else if msg.Event.UniqueId != "" {
+		_header.WriteString("unique_id=" + msg.Event.UniqueId + "\t")
+	}
 	_header.WriteString("loc_delim=" + msg.Event.LocationSeparator + "\t")
 	_header.WriteString("loc=" + msg.Event.Location + "\t")
 	_header.WriteString("timestamp=" + msg.Event.Timestamp + "\t")
-	_header.WriteString("id:name=" + msg.ClientName + "\t")
 	if msg.MessageId != "" {
 		_header.WriteString("_msg_id=" + msg.MessageId + "\t")
+	}
+
+	return _header.String()
+}
+
+// UpdateBatchTagsMessageHeader constructs header string to update tags for an event.
+//
+// Params:
+//
+// msg: The Message struct containing UpdateBatchTags fields.
+// Required fields: Event.Id OR Event.UniqueId, Event.Owner OR Event.OwnerUniqueID
+// Optional fields: MessageId
+//
+// Returns: string for header
+func UpdateBatchTagsMessageHeader(msg *Message) string {
+	var _header strings.Builder
+	_header.WriteString("_db_cmd=" + "update_tag_batch" + "\t")
+
+	// Event identifier: Id OR UniqueId (required)
+	if msg.Event.UniqueId != "" {
+		_header.WriteString("unique_id=" + msg.Event.UniqueId + "\t")
+	} else if msg.Event.Id != "" {
+		_header.WriteString("event_id=" + forceASCII(msg.Event.Id) + "\t")
+	}
+
+	// Owner: Owner OR OwnerUniqueID (required)
+	if msg.Event.Owner != "" {
+		_header.WriteString("owner=" + msg.Event.Owner + "\t")
+	} else if msg.Event.OwnerUniqueID != "" {
+		_header.WriteString("owner_unique_id=" + msg.Event.OwnerUniqueID + "\t")
+	}
+
+	if msg.MessageId != "" {
+		_header.WriteString("_msg_id=" + msg.MessageId)
 	}
 
 	return _header.String()

@@ -13,12 +13,6 @@ func GetDocument(name string) (string, error) {
 		return NeuralMemoryEventPrompts, nil
 	case "neural-memory-retrieval":
 		return NeuralMemoryRetrievalPrompts, nil
-	case "plan":
-		return Plan, nil
-	case "prompts":
-		return Prompts, nil
-	case "research":
-		return Research, nil
 	default:
 		return "", fmt.Errorf("unknown document: %s", name)
 	}
