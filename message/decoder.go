@@ -52,10 +52,10 @@ func decodeHeader(s string) (h map[string]string, err error) {
 // parseEventTagHeaders parses event_tag headers from GetEvent response
 // Format: event_tag:<freq>:<timestamp>=tag_value
 // Returns a slice of TagOutput parsed from the headers
-func parseEventTagHeaders(headerMap map[string]string) []TagOutput {
+func parseEventTagHeaders(msg *Message, headerMap *map[string]string) []TagOutput {
 	var results []TagOutput
 
-	for key, value := range headerMap {
+	for key, value := range *headerMap {
 		if !strings.HasPrefix(key, "event_tag:") {
 			continue
 		}
@@ -72,7 +72,7 @@ func parseEventTagHeaders(headerMap map[string]string) []TagOutput {
 
 		// Parse frequency (second part after event_tag:)
 		if len(parts) >= 2 {
-			if freq, err := strconv.Atoi(parts[1]); err == nil {
+			if freq, err := strconv.Atoi(parts[2]); err == nil {
 				tag.Frequency = freq
 			} else {
 				tag.Frequency = 1 // Default to 1 if parsing fails
@@ -702,17 +702,18 @@ func DecodeMessage(message []byte) (*Message, error) {
 			// For GetEventResponse, parse Tags and Links from payload if not BLOB data
 			// BLOB data is when SendData=true was in the request - the MimeType would be set
 			// and we leave the payload as-is
-			if msg.Payload.MimeType == "" || msg.Payload.MimeType == "application/octet-stream" {
+			if msg.Payload.MimeType != "application/octet-stream" {
+
 				// Parse structured data (Tags and Links)
-				tags, links, ok := parseGetEventPayload(&msg)
+				tags, links, ok := parseGetEventResponse(&msg, &headerMap)
 				if ok {
 					if msg.Event != nil {
-						msg.Event.Tags = tags
-						msg.Event.Links = links
+						msg.Response.EventRecords = append(msg.Response.EventRecords, *msg.Event)
+						msg.Response.EventRecords[0].Tags = tags
+						msg.Response.EventRecords[0].Links = links
 					}
 				}
 			}
-			// If MimeType is set and it's not octet-stream, the data is BLOB - leave as-is
 
 		case "GetEventsForTags", "GetEventsForTagsResponse":
 			msg.Response.EventRecords, _ = parseGetEventsForTagsPayload(&msg)

@@ -74,7 +74,6 @@ func newIntentTypes() *intentTypes {
 		LinkEvent:                Intent{Name: "LinkEvent", NeuralMemoryCommand: "link", MessageType: 1000, RoutingMessageType: "MEM_REQ"},
 		UnlinkEvent:              Intent{Name: "UnlinkEvent", NeuralMemoryCommand: "unlink", MessageType: 1000, RoutingMessageType: "MEM_REQ"},
 		StoreBatchLinks:          Intent{Name: "StoreBatchLinks", NeuralMemoryCommand: "link_batch", MessageType: 1000, RoutingMessageType: "MEM_REQ"},
-		UpdateBatchTags:          Intent{Name: "UpdateBatchTags", NeuralMemoryCommand: "update_tag_batch", MessageType: 1000, RoutingMessageType: "MEM_REQ"},
 		StoreEventResponse:       Intent{Name: "StoreEventResponse", NeuralMemoryCommand: "store", MessageType: 1001, RoutingMessageType: "MEM_REPLY"},
 		StoreBatchEventsResponse: Intent{Name: "StoreBatchEventsResponse", NeuralMemoryCommand: "store_batch", MessageType: 1001, RoutingMessageType: "MEM_REPLY"},
 		StoreBatchTagsResponse:   Intent{Name: "StoreBatchTagsResponse", NeuralMemoryCommand: "tag_store_batch", MessageType: 1001, RoutingMessageType: "MEM_REPLY"},
@@ -83,7 +82,6 @@ func newIntentTypes() *intentTypes {
 		LinkEventResponse:        Intent{Name: "LinkEventResponse", NeuralMemoryCommand: "link", MessageType: 1001, RoutingMessageType: "MEM_REPLY"},
 		UnlinkEventResponse:      Intent{Name: "UnlinkEventResponse", NeuralMemoryCommand: "unlink", MessageType: 1001, RoutingMessageType: "MEM_REPLY"},
 		StoreBatchLinksResponse:  Intent{Name: "StoreBatchLinksResponse", NeuralMemoryCommand: "link_batch", MessageType: 1001, RoutingMessageType: "MEM_REPLY"},
-		UpdateBatchTagsResponse:  Intent{Name: "UpdateBatchTagsResponse", NeuralMemoryCommand: "update_tag_batch", MessageType: 1001, RoutingMessageType: "MEM_REPLY"},
 		ActorEcho:                Intent{Name: "ActorEcho", MessageType: 2, RoutingMessageType: "ECHO"},
 		ActorHalt:                Intent{Name: "ActorHalt", MessageType: 99, RoutingMessageType: "HALT"},
 		ActorStart:               Intent{Name: "ActorStart", MessageType: 1, RoutingMessageType: "START"},
@@ -120,30 +118,28 @@ func newIntentTypes() *intentTypes {
 // commandToIntent maps NeuralMemoryCommand strings to their corresponding Request Intent.
 // Used when decoding MEM_REQ (1000) messages to determine the intent from the _command header field.
 var commandToIntent = map[string]Intent{
-	"store":            IntentType.StoreEvent,
-	"store_batch":      IntentType.StoreBatchEvents,
-	"tag_store_batch":  IntentType.StoreBatchTags,
-	"get":              IntentType.GetEvent,
-	"events_for_tag":   IntentType.GetEventsForTags,
-	"link":             IntentType.LinkEvent,
-	"unlink":           IntentType.UnlinkEvent,
-	"link_batch":       IntentType.StoreBatchLinks,
-	"update_tag_batch": IntentType.UpdateBatchTags,
+	"store":           IntentType.StoreEvent,
+	"store_batch":     IntentType.StoreBatchEvents,
+	"tag_store_batch": IntentType.StoreBatchTags,
+	"get":             IntentType.GetEvent,
+	"events_for_tag":  IntentType.GetEventsForTags,
+	"link":            IntentType.LinkEvent,
+	"unlink":          IntentType.UnlinkEvent,
+	"link_batch":      IntentType.StoreBatchLinks,
 }
 
 // commandToResponseIntent maps NeuralMemoryCommand strings to their corresponding Response Intent.
 // Used when decoding MEM_REPLY (1001) messages to determine the intent from the _type/_command header field.
 var commandToResponseIntent = map[string]Intent{
-	"store":            IntentType.StoreEventResponse,
-	"store_batch":      IntentType.StoreBatchEventsResponse,
-	"tag_store_batch":  IntentType.StoreBatchTagsResponse,
-	"get":              IntentType.GetEventResponse,
-	"events_for_tag":   IntentType.GetEventsForTagsResponse,
-	"events_for_tags":  IntentType.GetEventsForTagsResponse, // Handle both variants
-	"link":             IntentType.LinkEventResponse,
-	"unlink":           IntentType.UnlinkEventResponse,
-	"link_batch":       IntentType.StoreBatchLinksResponse,
-	"update_tag_batch": IntentType.UpdateBatchTagsResponse,
+	"store":           IntentType.StoreEventResponse,
+	"store_batch":     IntentType.StoreBatchEventsResponse,
+	"tag_store_batch": IntentType.StoreBatchTagsResponse,
+	"get":             IntentType.GetEventResponse,
+	"events_for_tag":  IntentType.GetEventsForTagsResponse,
+	"events_for_tags": IntentType.GetEventsForTagsResponse, // Handle both variants
+	"link":            IntentType.LinkEventResponse,
+	"unlink":          IntentType.UnlinkEventResponse,
+	"link_batch":      IntentType.StoreBatchLinksResponse,
 }
 
 // IntentFromCommand returns the Intent corresponding to the given command string.

@@ -177,6 +177,7 @@ type GetEventsForTagsOptions struct {
 	GetMatchLinks       bool   `podos:"get_match_links"`          // Include the number of links associated with a matching event object, filtered by “link_category” if present.
 	CountMatchLinks     bool   `podos:"count_match_links"`        // Return total links per event
 	GetLinkTags         bool   `podos:"get_link_tags"`            // Return tags for links
+	GetTargetTags       bool   `podos:"get_target_tags"`          // Return tags for link targets
 	LinkTagFilter       string `podos:"link_tag_pattern"`         // If present, tags associated with a link event object attached to a matching event will be filtered according to the regular expression described by the header field.
 	LinkedEventsFilter  string `podos:"linked_events_tag_filter"` // Regex filter for target tags
 	LinkCategory        string `podos:"link_category"`            // Restrict any link results to the category name matching the string.This includes link output and/or link counts.
@@ -257,7 +258,7 @@ type ResponseFields struct {
 	IsBuffered     bool // Whether response is buffered; used in GetEventsForTags response
 
 	// Brief hits response fields (for include_brief_hits=Y)
-	BriefHits []BriefHitRecord // Brief hit records when include_brief_hits=Y
+	BriefHits []BriefHitRecord // Brief hit records when include_brief_hits=Yx
 }
 
 type StoreBatchEventRecord struct {
@@ -649,6 +650,8 @@ type GatewayDefinition struct {
 	MailboxActors          []MailboxActor      // List of Mailbox Actors to be contained by the Gateway.
 	SocketActors           []SocketActor       // List of Socket Actors to be contained by the Gateway.
 	RouterActors           []RouterActor       // List of Router Actors to be contained by the Gateway.
+	Namespace              string              // Namespace of the Gateway.
+	Domain                 string              // Domain of the Gateway.
 }
 
 // ShellActor represents a shell Actor

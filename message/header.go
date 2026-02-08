@@ -1,6 +1,7 @@
 package message
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 )
@@ -63,9 +64,6 @@ func ConstructHeader(msg *Message, intent Intent, connectionIdUuid string) strin
 
 	case "StoreBatchLinks": // Batch Link Events
 		return BatchLinkEventsMessageHeader(msg)
-
-	case "UpdateBatchTags": // Update Batch Tags
-		return UpdateBatchTagsMessageHeader(msg)
 
 	case "ActorStreamOff": // Stream Off
 		return GatewayStreamOffHeader(msg)
@@ -217,7 +215,14 @@ func StoreEventMessageHeader(msg *Message) string {
 		_header.WriteString("type=" + "store event" + "\t")
 	}
 
-	_header.WriteString("mime=" + msg.Payload.MimeType + "\t")
+	_header.WriteString("mime=" + msg.PayloadMimeType() + "\t")
+	if tags := msg.Tags(); len(tags) > 0 {
+		for i, tag := range tags {
+			tagName := fmt.Sprintf("tag_%04d", i+1)
+			tagValue := fmt.Sprintf("%d:%s=%s", tag.Frequency, tag.Key, SerializeTagValue(tag.Value))
+			_header.WriteString(tagName + "=" + tagValue + "\t")
+		}
+	}
 	if msg.MessageId != "" {
 		_header.WriteString("_msg_id=" + msg.MessageId)
 	}
@@ -275,6 +280,32 @@ func StoreBatchTagsMessageHeader(msg *Message) string {
 	return _header.String()
 }
 
+// UpdateBatchTagsMessageHeader constructs header string to update tags for an event.
+// Uses _db_cmd=update_tag_batch. Same structure as StoreBatchTagsMessageHeader.
+func UpdateBatchTagsMessageHeader(msg *Message) string {
+	var _header strings.Builder
+	_header.WriteString("_db_cmd=" + "update_tag_batch" + "\t")
+
+	// Event identifier: UniqueId OR Id (required)
+	if msg.Event.UniqueId != "" {
+		_header.WriteString("unique_id=" + msg.Event.UniqueId + "\t")
+	} else if msg.Event.Id != "" {
+		_header.WriteString("event_id=" + forceASCII(msg.Event.Id) + "\t")
+	}
+
+	// Owner: Owner OR OwnerUniqueID (required)
+	if msg.Event.Owner != "" {
+		_header.WriteString("owner=" + msg.Event.Owner + "\t")
+	} else if msg.Event.OwnerUniqueID != "" {
+		_header.WriteString("owner_unique_id=" + msg.Event.OwnerUniqueID + "\t")
+	}
+
+	if msg.MessageId != "" {
+		_header.WriteString("_msg_id=" + msg.MessageId)
+	}
+	return _header.String()
+}
+
 // GetEventMessageHeader constructs the _get_ event message header.
 //
 // Params:
@@ -287,7 +318,7 @@ func GetEventMessageHeader(msg *Message) string {
 	var header strings.Builder
 
 	// Base command
-	header.WriteString("_db_cmd=get\t")
+	header.WriteString("_db_cmd=" + "get" + "\t")
 	// future support for time and location implicit association with events (i.e., a contextual search -- what happened around a specific time and location?)
 	/* 	if msg.Event.Timestamp != "" {
 	   		header.WriteString("timestamp=" + msg.Event.Timestamp + "\t")
@@ -307,7 +338,7 @@ func GetEventMessageHeader(msg *Message) string {
 			header.WriteString("event_id=" + forceASCII(msg.Event.Id) + "\t")
 		}
 		if msg.Event.UniqueId != "" {
-			header.WriteString("unique_id=" + msg.Event.UniqueId + "\t")
+			header.WriteString("unique_id=" + forceASCII(msg.Event.UniqueId) + "\t")
 		}
 	}
 
@@ -439,6 +470,9 @@ func GetEventsForTagMessageHeader(msg *Message) string {
 		if opts.GetLinkTags {
 			header.WriteString("get_link_tags=Y\t") // V
 		}
+		if opts.GetTargetTags {
+			header.WriteString("get_target_tags=Y\t") // V
+		}
 		if invertHitTagFilter {
 			header.WriteString("invert_hit_tag_filter=Y\t") // V
 		}
@@ -545,7 +579,7 @@ func LinkEventsMessageHeader(msg *Message) string {
 	_header.WriteString("loc_delim=" + msg.Event.LocationSeparator + "\t")
 	_header.WriteString("loc=" + msg.Event.Location + "\t")
 	_header.WriteString("type=" + msg.Event.Type + "\t")
-	_header.WriteString("mime=" + msg.Payload.MimeType + "\t")
+	_header.WriteString("mime=" + msg.PayloadMimeType() + "\t")
 	_header.WriteString("timestamp=" + msg.Event.Timestamp + "\t")
 	if msg.NeuralMemory.Link.OwnerID != "" {
 		_header.WriteString("owner_event_id=" + msg.NeuralMemory.Link.OwnerID + "\t")
@@ -599,40 +633,6 @@ func UnlinkEventsMessageHeader(msg *Message) string {
 	_header.WriteString("timestamp=" + msg.Event.Timestamp + "\t")
 	if msg.MessageId != "" {
 		_header.WriteString("_msg_id=" + msg.MessageId + "\t")
-	}
-
-	return _header.String()
-}
-
-// UpdateBatchTagsMessageHeader constructs header string to update tags for an event.
-//
-// Params:
-//
-// msg: The Message struct containing UpdateBatchTags fields.
-// Required fields: Event.Id OR Event.UniqueId, Event.Owner OR Event.OwnerUniqueID
-// Optional fields: MessageId
-//
-// Returns: string for header
-func UpdateBatchTagsMessageHeader(msg *Message) string {
-	var _header strings.Builder
-	_header.WriteString("_db_cmd=" + "update_tag_batch" + "\t")
-
-	// Event identifier: Id OR UniqueId (required)
-	if msg.Event.UniqueId != "" {
-		_header.WriteString("unique_id=" + msg.Event.UniqueId + "\t")
-	} else if msg.Event.Id != "" {
-		_header.WriteString("event_id=" + forceASCII(msg.Event.Id) + "\t")
-	}
-
-	// Owner: Owner OR OwnerUniqueID (required)
-	if msg.Event.Owner != "" {
-		_header.WriteString("owner=" + msg.Event.Owner + "\t")
-	} else if msg.Event.OwnerUniqueID != "" {
-		_header.WriteString("owner_unique_id=" + msg.Event.OwnerUniqueID + "\t")
-	}
-
-	if msg.MessageId != "" {
-		_header.WriteString("_msg_id=" + msg.MessageId)
 	}
 
 	return _header.String()

@@ -469,106 +469,181 @@ func parseStoreBatchEventsPayload(msg *Message) (storeBatchResults []StoreBatchE
 // - LinkTags: _linktag with associated fields
 // - TargetTags: _target_event_tag with associated fields
 // If SendData=true was in the request, the payload is BLOB data and this function should not be called.
-func parseGetEventPayload(msg *Message) (tags []TagOutput, links []LinkFields, ok bool) {
-	payloadStr, isString := msg.Payload.Data.(string)
-	if !isString {
+func parseGetEventResponse(msg *Message, headerMap *map[string]string) (tags []TagOutput, links []LinkFields, ok bool) {
+
+	// Compiles a complete Event object with Tags and Links. The GetEvent Response Header contains the Tags for the Events. The Payload contains the Links data.
+	tags = []TagOutput{}
+	links = []LinkFields{}
+
+	if msg.Response == nil {
 		return nil, nil, false
 	}
 
-	var resultTags []TagOutput
-	var resultLinks []LinkFields
-	linkMap := make(map[string]*LinkFields) // Consolidate links by ID
+	// Decode Header fields
+	tags = parseEventTagHeaders(msg, headerMap)
+
+	payloadStr, ok := msg.Payload.Data.(string)
+	if !ok {
+		return tags, links, true
+	}
+
+	// Line-based parsing: GetEvent payload uses newline-separated records
+	linkMap := make(map[string]*LinkFields)
 	linkTagsMap := make(map[string][]TagOutput)
 	targetTagsMap := make(map[string][]TagOutput)
 
-	// Split by tabs to get individual fields
-	fields := strings.Split(payloadStr, "\t")
-
-	for _, field := range fields {
-		field = strings.TrimSpace(field)
-		if field == "" {
+	lines := strings.Split(payloadStr, "\n")
+	for _, line := range lines {
+		line = strings.TrimRight(line, "\x00")
+		line = strings.TrimSpace(line)
+		if line == "" || line == "\x0F" || line == "\x00" {
 			continue
 		}
 
-		// Parse event tags: event_tag:nnnnnnnnn:f=key=value
-		if strings.HasPrefix(field, "event_tag:") {
-			tag := parseEventTagField(field)
-			if tag != nil {
-				resultTags = append(resultTags, *tag)
+		// Parse _link= lines (link records with inline fields)
+		if strings.HasPrefix(line, "_link=") {
+			link := parseGetEventLinkLine(line, headerMap)
+			if link != nil {
+				linkMap[link.Id] = link
 			}
 			continue
 		}
 
-		// Parse links: _link={Id}
-		if strings.HasPrefix(field, "_link=") {
-			linkId := strings.TrimPrefix(field, "_link=")
-			if _, exists := linkMap[linkId]; !exists {
-				linkMap[linkId] = &LinkFields{Id: linkId}
+		// Parse _linktag lines (link ID from event_id, not _linktag)
+		if strings.HasPrefix(line, "_linktag\t") || line == "_linktag" {
+			linkId, tag := parseGetEventLinkTagLine(line)
+			if linkId != "" && tag != nil {
+				linkTagsMap[linkId] = append(linkTagsMap[linkId], *tag)
 			}
 			continue
 		}
 
-		// Parse link fields that follow a _link field
-		// These include: unique_id=, target_event=, target_unique_id=, strength=, category=
-		if strings.Contains(field, "=") {
-			parts := strings.SplitN(field, "=", 2)
-			if len(parts) == 2 {
-				key := parts[0]
-				value := parts[1]
-
-				// Check if this is a link-related field and update the most recent link
-				// (In practice, the link ID context is maintained by ordering)
-				for linkId, link := range linkMap {
-					switch key {
-					case "unique_id":
-						link.UniqueId = value
-						linkMap[linkId] = link
-					case "target_event":
-						link.EventB = value
-						linkMap[linkId] = link
-					case "target_unique_id":
-						link.UniqueIdB = value
-						linkMap[linkId] = link
-					case "strength":
-						if s, err := strconv.ParseFloat(value, 64); err == nil {
-							link.StrengthB = s
-						}
-						linkMap[linkId] = link
-					case "category":
-						link.Category = value
-						linkMap[linkId] = link
-					}
-				}
+		// Parse _target_event_tag lines (target event ID from event_id)
+		if strings.HasPrefix(line, "_target_event_tag\t") || line == "_target_event_tag" {
+			targetEventId, tag := parseGetEventTargetTagLine(line)
+			if targetEventId != "" && tag != nil {
+				targetTagsMap[targetEventId] = append(targetTagsMap[targetEventId], *tag)
 			}
-		}
-
-		// Parse link tags: _linktag (no = and no value for the field itself)
-		if strings.HasPrefix(field, "_linktag") && !strings.Contains(field, "=") {
-			// The next fields contain link tag details
 			continue
 		}
 
-		// Parse target tags: _target_event_tag
-		if strings.HasPrefix(field, "_target_event_tag") && !strings.Contains(field, "=") {
-			// The next fields contain target tag details
-			continue
+		// Mixed first line: may contain event_tags and _link= on same line
+		recordMap := parseTabDelimitedLine(line)
+		if linkId, hasLink := recordMap["_link"]; hasLink && linkId != "" {
+			link := parseGetEventLinkLine(line, headerMap)
+			if link != nil {
+				linkMap[link.Id] = link
+			}
 		}
 	}
 
-	// Consolidate links with their tags
+	// Consolidate links with their tags (target tags keyed by link.EventB)
 	for _, link := range linkMap {
-		if tags, exists := linkTagsMap[link.Id]; exists {
-			// Add tags to link (would need LinkFields.Tags field)
-			_ = tags
+		if linkTags, exists := linkTagsMap[link.Id]; exists {
+			link.Tags = linkTags
 		}
-		if tags, exists := targetTagsMap[link.Id]; exists {
-			// Add target tags (would need additional field)
-			_ = tags
+		if link.EventB != "" {
+			if targetTags, exists := targetTagsMap[link.EventB]; exists {
+				link.TargetTags = targetTags
+			}
 		}
-		resultLinks = append(resultLinks, *link)
+		links = append(links, *link)
 	}
 
-	return resultTags, resultLinks, true
+	return tags, links, true
+}
+
+// parseGetEventLinkLine parses a _link= line from GetEvent payload.
+// Format: _link={linkId}	unique_id=	target_event=	target_unique_id=	strength=	link_time=	category=
+func parseGetEventLinkLine(line string, headerMap *map[string]string) *LinkFields {
+	recordMap := parseTabDelimitedLine(line)
+	linkId, exists := recordMap["_link"]
+	if !exists || linkId == "" {
+		return nil
+	}
+
+	link := &LinkFields{Id: linkId}
+
+	if targetEvent, exists := recordMap["target_event"]; exists {
+		link.EventB = targetEvent
+	}
+	if targetUniqueId, exists := recordMap["target_unique_id"]; exists {
+		link.UniqueIdB = targetUniqueId
+	}
+	if uniqueId, exists := recordMap["unique_id"]; exists {
+		link.UniqueId = uniqueId
+	}
+	if strength, exists := recordMap["strength"]; exists {
+		if s, err := strconv.ParseFloat(strength, 64); err == nil {
+			link.StrengthB = s
+		}
+	}
+	if category, exists := recordMap["category"]; exists {
+		link.Category = category
+	}
+
+	// EventA is the main event (source); get from header when available
+	if headerMap != nil {
+		if eventId, exists := (*headerMap)["event_id"]; exists {
+			link.EventA = eventId
+		} else if eventId, exists := (*headerMap)["_event_id"]; exists {
+			link.EventA = eventId
+		}
+	}
+
+	return link
+}
+
+// parseGetEventLinkTagLine parses a _linktag line from GetEvent payload.
+// Format: _linktag	event_id={linkId}	unique=	freq=	timestamp=	value=
+// The link ID comes from event_id, not _linktag.
+func parseGetEventLinkTagLine(line string) (linkId string, tag *TagOutput) {
+	recordMap := parseTabDelimitedLine(line)
+	linkId = recordMap["event_id"]
+	if linkId == "" {
+		return "", nil
+	}
+
+	tag = &TagOutput{}
+	if freqStr, exists := recordMap["freq"]; exists {
+		tag.Frequency, _ = strconv.Atoi(freqStr)
+	}
+	if value, exists := recordMap["value"]; exists {
+		if eqIdx := strings.Index(value, "="); eqIdx > 0 {
+			tag.Key = value[:eqIdx]
+			tag.Value = value[eqIdx+1:]
+		} else {
+			tag.Value = value
+		}
+	}
+
+	return linkId, tag
+}
+
+// parseGetEventTargetTagLine parses a _target_event_tag line from GetEvent payload.
+// Format: _target_event_tag	event_id={targetEventId}	unique=	freq=	timestamp=	value=
+// The target event ID comes from event_id; tags are associated with links via link.EventB.
+func parseGetEventTargetTagLine(line string) (targetEventId string, tag *TagOutput) {
+	recordMap := parseTabDelimitedLine(line)
+	targetEventId = recordMap["event_id"]
+	if targetEventId == "" {
+		return "", nil
+	}
+
+	tag = &TagOutput{}
+	if freqStr, exists := recordMap["freq"]; exists {
+		tag.Frequency, _ = strconv.Atoi(freqStr)
+	}
+	if value, exists := recordMap["value"]; exists {
+		if eqIdx := strings.Index(value, "="); eqIdx > 0 {
+			tag.Key = value[:eqIdx]
+			tag.Value = value[eqIdx+1:]
+		} else {
+			tag.Value = value
+		}
+	}
+
+	return targetEventId, tag
 }
 
 // parseEventTagField parses an event_tag field from GetEvent payload

@@ -281,7 +281,7 @@ func (c *Client) Send(data []byte) (int, *errors.GatewayDError) {
 		sent += written
 	}
 	log.Printf("sent data to the server %s, of %d length", c.Host, sent)
-	log.Printf("DEBUG: Sent Message Dump: %s", string(data))
+	// log.Printf("DEBUG: Sent Message Dump: %s", string(data))
 
 	span.AddEvent("sent data to server")
 

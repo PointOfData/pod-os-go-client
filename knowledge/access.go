@@ -27,6 +27,5 @@ func ListDocuments() []string {
 		"neural-memory-retrieval",
 		"plan",
 		"prompts",
-		"research",
 	}
 }
