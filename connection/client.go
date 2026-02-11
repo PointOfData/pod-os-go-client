@@ -238,6 +238,11 @@ func (c *Client) Send(data []byte) (int, *errors.GatewayDError) {
 		span.RecordError(errors.ErrClientNotConnected)
 		return 0, errors.ErrClientNotConnected
 	}
+	// Defensive: Conn can be nil despite connected flag (race, init bug, or Close)
+	if c.Conn == nil {
+		span.RecordError(errors.ErrClientNotConnected)
+		return 0, errors.ErrClientNotConnected
+	}
 
 	// Refresh write deadline before each send operation
 	// This ensures the deadline is fresh for each write, preventing timeouts on idle connections or longer writes
