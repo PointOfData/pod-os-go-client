@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"net"
 	"strings"
 	"sync"
@@ -13,6 +12,7 @@ import (
 	"github.com/PointOfData/pod-os-go-client/config"
 	"github.com/PointOfData/pod-os-go-client/connection"
 	gatewayerrors "github.com/PointOfData/pod-os-go-client/errors"
+	"github.com/PointOfData/pod-os-go-client/log"
 	"github.com/PointOfData/pod-os-go-client/message"
 	"github.com/google/uuid"
 )
@@ -65,7 +65,7 @@ func RegisterClient(client *Client) error {
 	clientRegistry[key] = client
 	actorRegistry[client.gatewayActorName] = client
 
-	log.Printf("Registered client for actor %s with ClientName %s", client.gatewayActorName, client.clientName)
+	log.LoggerOrNoOp(client.logger).Info("registered client", "actor", client.gatewayActorName, "client_name", client.clientName)
 	return nil
 }
 
@@ -80,7 +80,7 @@ func RemoveClientByGatewayActorName(gatewayActorName string) {
 		if client.key != "" {
 			delete(clientRegistry, client.key)
 		}
-		log.Printf("Removed client for Gateway Actor %s from registry", gatewayActorName)
+		log.LoggerOrNoOp(client.logger).Info("removed client from registry", "actor", gatewayActorName)
 	}
 }
 
@@ -128,6 +128,8 @@ type Client struct {
 	reconnecting     bool       // Whether a reconnection is in progress
 	reconnectingMu   sync.Mutex // Protects reconnecting flag
 	reconnectAttempt int        // Current reconnection attempt number
+
+	logger log.Logger
 }
 
 // NewClient creates a new Pod-OS client or returns an existing one if ClientName + ActorName already exists.
@@ -141,6 +143,9 @@ func NewClient(ctx context.Context, cfg config.Config) (*Client, error) {
 		return nil, fmt.Errorf("GatewayActorName is required and cannot be empty")
 	}
 
+	logger := log.LoggerFromConfig(cfg.Logger, log.Level(cfg.LogLevel))
+	message.SetDecoderLogger(logger)
+
 	// Create unique key for this client
 	key := getClientKey(cfg.ClientName, cfg.GatewayActorName)
 
@@ -150,11 +155,11 @@ func NewClient(ctx context.Context, cfg config.Config) (*Client, error) {
 		registryMu.Unlock()
 		// Verify existing client is still connected
 		if existingClient.IsConnected() {
-			log.Printf("Returning existing client for %s", key)
+			logger.Info("returning existing client", "key", key)
 			return existingClient, nil
 		}
 		// Client exists but is not connected, remove it and create a new one
-		log.Printf("Existing client for %s is not connected, creating new one", key)
+		logger.Info("existing client not connected, creating new one", "key", key)
 		registryMu.Lock()
 		delete(clientRegistry, key)
 		registryMu.Unlock()
@@ -168,11 +173,14 @@ func NewClient(ctx context.Context, cfg config.Config) (*Client, error) {
 		Backoff:            cfg.RetryConfig.Backoff,
 		BackoffMultiplier:  cfg.RetryConfig.BackoffMultiplier,
 		DisableBackoffCaps: cfg.RetryConfig.DisableBackoffCaps,
+		Logger:             logger,
 	})
 
 	// Create connection client
 	clientConfig := connection.ClientConfig{
 		TracerName:     cfg.TracerName,
+		Tracer:         cfg.Tracer,
+		Logger:         logger,
 		DialTimeout:    cfg.DialTimeout,
 		SendTimeout:    cfg.SendTimeout,
 		ReceiveTimeout: cfg.ReceiveTimeout,
@@ -235,7 +243,7 @@ func NewClient(ctx context.Context, cfg config.Config) (*Client, error) {
 		return nil, fmt.Errorf("failed to send ID message: no bytes sent")
 	}
 
-	log.Printf("ID message sent (%d bytes) to actor %s as %s", sent, cfg.GatewayActorName, clientName)
+	logger.Info("ID message sent", "bytes", sent, "actor", cfg.GatewayActorName, "client_name", clientName)
 
 	// Receive and check ID response for any errors
 	idReceiveTimeout := cfg.ReceiveTimeout
@@ -272,7 +280,7 @@ func NewClient(ctx context.Context, cfg config.Config) (*Client, error) {
 		return nil, fmt.Errorf("ID message rejected by Gateway: %s", errMsg)
 	}
 
-	log.Printf("ID response received from %s: status=%s", cfg.GatewayActorName, idResponse.ProcessingStatus())
+	logger.Info("ID response received", "actor", cfg.GatewayActorName, "status", idResponse.ProcessingStatus())
 
 	// Send STREAM ON message to enable streaming mode (default behavior)
 	// Only skip if explicitly disabled via EnableStreaming = false
@@ -313,9 +321,9 @@ func NewClient(ctx context.Context, cfg config.Config) (*Client, error) {
 			return nil, fmt.Errorf("failed to send STREAM ON message: no bytes sent")
 		}
 
-		log.Printf("STREAM ON message sent (%d bytes) to actor %s", streamOnSent, cfg.GatewayActorName)
+		logger.Info("STREAM ON message sent", "bytes", streamOnSent, "actor", cfg.GatewayActorName)
 	} else {
-		log.Printf("Streaming disabled, skipping STREAM ON message for actor %s", cfg.GatewayActorName)
+		logger.Info("streaming disabled, skipping STREAM ON", "actor", cfg.GatewayActorName)
 	}
 
 	// Create connection pool if configured
@@ -348,6 +356,7 @@ func NewClient(ctx context.Context, cfg config.Config) (*Client, error) {
 		receiverCtx:      receiverCtx,
 		receiverCancel:   receiverCancel,
 		pending:          make(map[string]chan *message.Message),
+		logger:           logger,
 	}
 
 	// Register the new client (double-check to prevent race conditions)
@@ -364,7 +373,7 @@ func NewClient(ctx context.Context, cfg config.Config) (*Client, error) {
 		}
 		client.receiverCancel() // Cancel the receiver context we created
 		if existingClient.IsConnected() {
-			log.Printf("Another goroutine created client for %s, returning existing one", key)
+			logger.Info("another goroutine created client, returning existing one", "key", key)
 			return existingClient, nil
 		}
 		// Existing client is not connected, remove it and register ours
@@ -374,7 +383,7 @@ func NewClient(ctx context.Context, cfg config.Config) (*Client, error) {
 		clientRegistry[key] = client
 		actorRegistry[cfg.GatewayActorName] = client
 		registryMu.Unlock()
-		log.Printf("Registered new client for %s (replaced disconnected one)", key)
+		logger.Info("registered new client", "key", key, "msg", "replaced disconnected one")
 		// Start background receiver if concurrent mode is enabled
 		if cfg.EnableConcurrentMode {
 			client.StartReceiver()
@@ -384,7 +393,7 @@ func NewClient(ctx context.Context, cfg config.Config) (*Client, error) {
 	clientRegistry[key] = client
 	actorRegistry[cfg.GatewayActorName] = client
 	registryMu.Unlock()
-	log.Printf("Registered new client for %s", key)
+	logger.Info("registered new client", "key", key)
 
 	// Start background receiver if concurrent mode is enabled
 	if cfg.EnableConcurrentMode {
@@ -405,7 +414,7 @@ func NewClient(ctx context.Context, cfg config.Config) (*Client, error) {
 func (c *Client) SendMessage(ctx context.Context, msg *message.Message) (*message.Message, error) {
 	// Auto-update ClientName to match this client's identity
 	if msg.ClientName != c.clientName {
-		log.Printf("Updating message ClientName from '%s' to '%s'", msg.ClientName, c.clientName)
+		c.logger.Info("updating message ClientName", "from", msg.ClientName, "to", c.clientName)
 		msg.ClientName = c.clientName
 	}
 
@@ -414,7 +423,7 @@ func (c *Client) SendMessage(ctx context.Context, msg *message.Message) (*messag
 		parts := strings.Split(msg.From, "@")
 		expectedFrom := c.clientName + "@" + parts[1]
 		if msg.From != expectedFrom {
-			log.Printf("Updating message From from '%s' to '%s'", msg.From, expectedFrom)
+			c.logger.Info("updating message From", "from", msg.From, "to", expectedFrom)
 			msg.From = expectedFrom
 		}
 	}
@@ -448,7 +457,7 @@ func (c *Client) SendControlMessage(ctx context.Context, msg *message.SocketMess
 		return fmt.Errorf("failed to send control message: no bytes sent")
 	}
 
-	log.Printf("Sent control message: %d bytes to actor %s", sent, c.gatewayActorName)
+	c.logger.Info("sent control message", "bytes", sent, "actor", c.gatewayActorName)
 	return nil
 }
 
@@ -460,7 +469,7 @@ func (c *Client) StartReceiver() {
 	defer c.sendMu.Unlock()
 
 	if c.receiverActive {
-		log.Printf("Background receiver already active for %s", c.gatewayActorName)
+		c.logger.Info("background receiver already active", "actor", c.gatewayActorName)
 		return
 	}
 
@@ -471,7 +480,7 @@ func (c *Client) StartReceiver() {
 		c.receiveLoop()
 	}()
 
-	log.Printf("Started background receiver for %s", c.gatewayActorName)
+	c.logger.Info("started background receiver", "actor", c.gatewayActorName)
 }
 
 // StopReceiver stops the background receiver goroutine.
@@ -498,7 +507,7 @@ func (c *Client) StopReceiver() {
 	case <-done:
 		// Receiver stopped cleanly
 	case <-time.After(5 * time.Second):
-		log.Printf("Timeout waiting for receiver to stop for %s", c.gatewayActorName)
+		c.logger.Warn("timeout waiting for receiver to stop", "actor", c.gatewayActorName)
 	}
 
 	c.sendMu.Lock()
@@ -513,7 +522,7 @@ func (c *Client) StopReceiver() {
 	}
 	c.pendingMu.Unlock()
 
-	log.Printf("Stopped background receiver for %s", c.gatewayActorName)
+	c.logger.Info("stopped background receiver", "actor", c.gatewayActorName)
 }
 
 // IsReceiverActive returns whether the background receiver is running
@@ -530,7 +539,7 @@ func (c *Client) receiveLoop() {
 	for {
 		select {
 		case <-c.receiverCtx.Done():
-			log.Printf("Receiver context cancelled for %s, exiting loop", c.gatewayActorName)
+			c.logger.Info("receiver context cancelled, exiting loop", "actor", c.gatewayActorName)
 			return
 		default:
 			// Continue receiving
@@ -545,7 +554,7 @@ func (c *Client) receiveLoop() {
 					continue
 				}
 			}
-			log.Printf("Connection lost for %s, receiver exiting", c.gatewayActorName)
+			c.logger.Info("connection lost, receiver exiting", "actor", c.gatewayActorName)
 			return
 		}
 
@@ -569,7 +578,7 @@ func (c *Client) receiveLoop() {
 
 			// Check if it's a connection error that requires reconnection
 			if isConnectionError(errStr) {
-				log.Printf("Connection error for %s: %v", c.gatewayActorName, receiveErr)
+				c.logger.Error("connection error", "actor", c.gatewayActorName, "error", receiveErr)
 
 				// Notify pending callers that connection was lost
 				c.notifyPendingCallersConnectionLost()
@@ -582,12 +591,12 @@ func (c *Client) receiveLoop() {
 					}
 				}
 				// Reconnection failed or disabled, exit loop
-				log.Printf("Connection recovery failed for %s, receiver exiting", c.gatewayActorName)
+				c.logger.Error("connection recovery failed, receiver exiting", "actor", c.gatewayActorName)
 				return
 			}
 
 			// Log other errors but continue
-			log.Printf("Receive error for %s: %v", c.gatewayActorName, receiveErr)
+			c.logger.Error("receive error", "actor", c.gatewayActorName, "error", receiveErr)
 			continue
 		}
 
@@ -598,14 +607,14 @@ func (c *Client) receiveLoop() {
 		// Decode the response
 		response, decodeErr := message.DecodeMessage(responseBytes)
 		if decodeErr != nil {
-			log.Printf("Failed to decode response for %s: %v", c.gatewayActorName, decodeErr)
+			c.logger.Error("failed to decode response", "actor", c.gatewayActorName, "error", decodeErr)
 			continue
 		}
 
 		// Route response to the waiting caller using MessageId
 		messageId := response.MessageId
 		if messageId == "" {
-			log.Printf("Received response without MessageId for %s", c.gatewayActorName)
+			c.logger.Warn("received response without MessageId", "actor", c.gatewayActorName)
 			continue
 		}
 
@@ -617,12 +626,18 @@ func (c *Client) receiveLoop() {
 			// Non-blocking send to avoid deadlock if caller already timed out
 			select {
 			case responseChan <- response:
-				log.Printf("Routed response for MessageId %s to caller", messageId)
+				if c.logger.Enabled(log.LevelDebug) {
+					c.logger.Debug("routed response to caller", "message_id", messageId)
+				}
 			default:
-				log.Printf("Caller already gone for MessageId %s (timed out)", messageId)
+				if c.logger.Enabled(log.LevelDebug) {
+					c.logger.Debug("caller already gone", "message_id", messageId, "msg", "timed out")
+				}
 			}
 		} else {
-			log.Printf("No pending request for MessageId %s (may have timed out)", messageId)
+			if c.logger.Enabled(log.LevelDebug) {
+				c.logger.Debug("no pending request for MessageId", "message_id", messageId)
+			}
 		}
 	}
 }
@@ -637,7 +652,9 @@ func (c *Client) notifyPendingCallersConnectionLost() {
 		// Close the channel to signal connection loss
 		close(ch)
 		delete(c.pending, msgId)
-		log.Printf("Notified pending caller for MessageId %s of connection loss", msgId)
+		if c.logger.Enabled(log.LevelDebug) {
+			c.logger.Debug("notified pending caller of connection loss", "message_id", msgId)
+		}
 	}
 }
 
@@ -675,7 +692,7 @@ func (c *Client) attemptReconnection() bool {
 		// Check if receiver context is cancelled
 		select {
 		case <-c.receiverCtx.Done():
-			log.Printf("Reconnection cancelled for %s (context done)", c.gatewayActorName)
+			c.logger.Info("reconnection cancelled", "actor", c.gatewayActorName, "msg", "context done")
 			return false
 		default:
 		}
@@ -684,16 +701,16 @@ func (c *Client) attemptReconnection() bool {
 		c.reconnectAttempt = attempt
 		c.reconnectingMu.Unlock()
 
-		log.Printf("Reconnection attempt %d/%d for %s (backoff: %v)", attempt, maxRetries, c.gatewayActorName, backoff)
+		c.logger.Info("reconnection attempt", "attempt", attempt, "max_retries", maxRetries, "actor", c.gatewayActorName, "backoff", backoff)
 
 		// Attempt to reconnect the underlying connection
 		if err := c.conn.Reconnect(); err != nil {
-			log.Printf("Reconnection attempt %d failed for %s: %v", attempt, c.gatewayActorName, err)
+			c.logger.Warn("reconnection attempt failed", "attempt", attempt, "actor", c.gatewayActorName, "error", err)
 
 			// Wait with exponential backoff before next attempt
 			select {
 			case <-c.receiverCtx.Done():
-				log.Printf("Reconnection cancelled for %s during backoff", c.gatewayActorName)
+				c.logger.Info("reconnection cancelled during backoff", "actor", c.gatewayActorName)
 				return false
 			case <-time.After(backoff):
 			}
@@ -707,10 +724,10 @@ func (c *Client) attemptReconnection() bool {
 		}
 
 		// Connection re-established, now re-authenticate
-		log.Printf("Connection re-established for %s, re-authenticating...", c.gatewayActorName)
+		c.logger.Info("connection re-established, re-authenticating", "actor", c.gatewayActorName)
 
 		if err := c.reAuthenticate(); err != nil {
-			log.Printf("Re-authentication failed for %s: %v", c.gatewayActorName, err)
+			c.logger.Error("re-authentication failed", "actor", c.gatewayActorName, "error", err)
 			// Close the connection and try again
 			c.conn.Close()
 
@@ -728,11 +745,11 @@ func (c *Client) attemptReconnection() bool {
 			continue
 		}
 
-		log.Printf("Successfully reconnected and re-authenticated for %s", c.gatewayActorName)
+		c.logger.Info("successfully reconnected and re-authenticated", "actor", c.gatewayActorName)
 		return true
 	}
 
-	log.Printf("Max reconnection attempts reached for %s", c.gatewayActorName)
+	c.logger.Warn("max reconnection attempts reached", "actor", c.gatewayActorName)
 	return false
 }
 
@@ -772,7 +789,7 @@ func (c *Client) reAuthenticate() error {
 		return fmt.Errorf("failed to send ID message: no bytes sent")
 	}
 
-	log.Printf("Re-authentication: ID message sent (%d bytes) to actor %s", sent, c.gatewayActorName)
+	c.logger.Info("re-authentication: ID message sent", "bytes", sent, "actor", c.gatewayActorName)
 
 	// Receive ID response
 	idReceiveTimeout := c.cfg.ReceiveTimeout
@@ -805,7 +822,7 @@ func (c *Client) reAuthenticate() error {
 		return fmt.Errorf("ID message rejected by Gateway: %s", errMsg)
 	}
 
-	log.Printf("Re-authentication: ID response received from %s: status=%s", c.gatewayActorName, idResponse.ProcessingStatus())
+	c.logger.Info("re-authentication: ID response received", "actor", c.gatewayActorName, "status", idResponse.ProcessingStatus())
 
 	// Send STREAM ON message if streaming was enabled
 	enableStreaming := c.cfg.EnableStreaming == nil || *c.cfg.EnableStreaming
@@ -834,7 +851,7 @@ func (c *Client) reAuthenticate() error {
 			return fmt.Errorf("failed to send STREAM ON message: no bytes sent")
 		}
 
-		log.Printf("Re-authentication: STREAM ON message sent (%d bytes) to actor %s", streamOnSent, c.gatewayActorName)
+		c.logger.Info("re-authentication: STREAM ON message sent", "bytes", streamOnSent, "actor", c.gatewayActorName)
 	}
 
 	return nil
@@ -879,7 +896,9 @@ func (c *Client) sendMessageWithCorrelation(ctx context.Context, msg *message.Me
 	// Send with mutex to prevent interleaved writes
 	c.sendMu.Lock()
 	sent, sendErr := c.conn.Send(socketMsg.MessageBytes)
-	log.Printf("DEBUG: Sending raw message: %q", string(socketMsg.MessageBytes))
+	if c.logger.Enabled(log.LevelDebug) {
+		c.logger.Debug("sending raw message", "message", string(socketMsg.MessageBytes))
+	}
 	c.sendMu.Unlock()
 
 	if sendErr != nil {
@@ -890,7 +909,7 @@ func (c *Client) sendMessageWithCorrelation(ctx context.Context, msg *message.Me
 		return nil, fmt.Errorf("failed to send message: no bytes sent")
 	}
 
-	log.Printf("Sent %d bytes to actor %s [MessageId: %s]", sent, c.gatewayActorName, messageId)
+	c.logger.Info("sent message", "bytes", sent, "actor", c.gatewayActorName, "message_id", messageId)
 
 	// Wait for response with context timeout
 	select {
@@ -944,7 +963,7 @@ func (c *Client) sendMessageSync(ctx context.Context, msg *message.Message) (*me
 		return nil, fmt.Errorf("failed to send message: no bytes sent")
 	}
 
-	log.Printf("Sent %d bytes to actor %s", sent, c.gatewayActorName)
+	c.logger.Info("sent message", "bytes", sent, "actor", c.gatewayActorName)
 
 	// Check connection before receiving
 	if !c.conn.IsConnected() {
@@ -1010,7 +1029,7 @@ func (c *Client) Close() error {
 		delete(actorRegistry, c.gatewayActorName)
 	}
 	registryMu.Unlock()
-	log.Printf("Removed client from registry: %s (actor: %s)", c.key, c.gatewayActorName)
+	c.logger.Info("removed client from registry", "key", c.key, "actor", c.gatewayActorName)
 
 	if c.pool != nil {
 		c.pool.Close()

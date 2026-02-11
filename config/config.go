@@ -1,6 +1,11 @@
 package config
 
-import "time"
+import (
+	"time"
+
+	"github.com/PointOfData/pod-os-go-client/connection"
+	"github.com/PointOfData/pod-os-go-client/log"
+)
 
 // Config holds configuration for a Pod-OS client
 type Config struct {
@@ -44,9 +49,20 @@ type Config struct {
 	// ReconnectConfig holds all reconnection-related configuration.
 	ReconnectConfig ReconnectConfig
 
+	// LogLevel: 0=disabled, 1=Error, 2=Warn, 3=Info, 4=Debug.
+	// Production: 1-2. Development: 3-4.
+	LogLevel int
+
+	// Logger: injectable. If nil, uses NoOpLogger (zero overhead).
+	Logger log.Logger
+
 	// Optional: OpenTelemetry
 	EnableTracing bool
 	TracerName    string
+
+	// Tracer: injectable. If nil, uses NoOpTracer (zero overhead).
+	// Wire EnableTracing/TracerName when providing an OTLP-configured Tracer.
+	Tracer connection.Tracer
 }
 
 // RetryConfig holds retry configuration

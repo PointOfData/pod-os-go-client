@@ -35,7 +35,8 @@ type intentTypes struct {
 	ActorEcho                Intent // ActorEcho is used to echo a message from the Actor to the client.
 	ActorHalt                Intent // ActorHalt is used to halt the Actor.
 	ActorStart               Intent // ActorStart is used to start an Actor.
-	GatewayStatus            Intent // GatewayStatus is used to get the status of a Gateway. It is never sent to an Actor.
+	Status                   Intent // Status is used to communicate status; optionally rely on MessageId to identify the status.
+	StatusRequest            Intent // StatusRequest is used to request the status of an Actor.
 	ActorRequest             Intent // ActorRequest is a request sent to an Actor.
 	ActorResponse            Intent // ActorResponse is a response sent from an Actor in response to an ActorRequest.
 	GatewayId                Intent // GatewayID is used by a client to identify the connection (required for all messages and connections) and establish client authentication and authorization.
@@ -85,7 +86,8 @@ func newIntentTypes() *intentTypes {
 		ActorEcho:                Intent{Name: "ActorEcho", MessageType: 2, RoutingMessageType: "ECHO"},
 		ActorHalt:                Intent{Name: "ActorHalt", MessageType: 99, RoutingMessageType: "HALT"},
 		ActorStart:               Intent{Name: "ActorStart", MessageType: 1, RoutingMessageType: "START"},
-		GatewayStatus:            Intent{Name: "GatewayStatus", MessageType: 3, RoutingMessageType: "STATUS"},
+		Status:                   Intent{Name: "Status", MessageType: 3, RoutingMessageType: "STATUS"},
+		StatusRequest:            Intent{Name: "StatusRequest", MessageType: 110, RoutingMessageType: "STATUS_REQ"},
 		ActorRequest:             Intent{Name: "ActorRequest", MessageType: 4, RoutingMessageType: "REQUEST"},
 		ActorResponse:            Intent{Name: "ActorResponse", MessageType: 30, RoutingMessageType: "REPLY"},
 		GatewayId:                Intent{Name: "GatewayId", MessageType: 5, RoutingMessageType: "ID"},
@@ -216,7 +218,7 @@ func intentFromMessageTypeInt(messageType int) (Intent, bool) {
 		IntentType.LinkEventResponse, IntentType.UnlinkEventResponse, IntentType.StoreBatchLinksResponse,
 		// Gateway/Actor intents
 		IntentType.ActorEcho, IntentType.ActorHalt, IntentType.ActorStart,
-		IntentType.GatewayStatus, IntentType.ActorRequest, IntentType.GatewayId,
+		IntentType.Status, IntentType.StatusRequest, IntentType.ActorRequest, IntentType.GatewayId,
 		IntentType.GatewayDisconnect, IntentType.GatewaySendNext, IntentType.GatewayNoSend,
 		IntentType.GatewayStreamOff, IntentType.GatewayStreamOn, IntentType.ActorRecord,
 		IntentType.GatewayBatchStart, IntentType.GatewayBatchEnd,

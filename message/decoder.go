@@ -2,10 +2,21 @@ package message
 
 import (
 	"fmt"
-	"log"
 	"strconv"
 	"strings"
+
+	"github.com/PointOfData/pod-os-go-client/log"
 )
+
+// decoderLogger is the logger used by DecodeMessage. Set via SetDecoderLogger.
+// Defaults to NoOpLogger when nil.
+var decoderLogger log.Logger
+
+// SetDecoderLogger sets the logger used by DecodeMessage for decode errors and debug output.
+// Call from the application when creating a client to enable decode logging.
+func SetDecoderLogger(l log.Logger) {
+	decoderLogger = l
+}
 
 // decodeMessageSizeParam decodes a message size parameter from bytes
 func decodeMessageSizeParam(param []byte) (n int64, err error) {
@@ -155,8 +166,9 @@ func decodeEventFields(eventMap map[string]string, event *EventFields) (eventFie
 	} else if eventType, exists := eventMap["type"]; exists {
 		event.Type = eventType
 	}
-	if user, exists := eventMap["_user"]; exists {
-		event.Owner = user
+	if _, exists := eventMap["_user"]; exists {
+		// Doing nothing for now. Unclear how to use this.
+		// event.Owner = user
 	}
 	if owner, exists := eventMap["_owner_id"]; exists {
 		event.Owner = owner
@@ -456,16 +468,21 @@ func transformHeaderMaptoMessageStruct(headerMap map[string]string, msg *Message
 	return msg, true
 }
 
-// logRawMessage logs the raw message bytes for debugging (limited to reasonable size)
+// logRawMessage logs the raw message bytes for debugging (limited to reasonable size).
+// Only logs when decoderLogger has Debug level enabled.
 func logRawMessage(message []byte) {
+	l := log.LoggerOrNoOp(decoderLogger)
+	if !l.Enabled(log.LevelDebug) {
+		return
+	}
 	const maxLogBytes = 200 // Limit to first 200 bytes for readability
 	logBytes := len(message)
 	if logBytes > maxLogBytes {
 		logBytes = maxLogBytes
 	}
-	log.Printf("DEBUG: Raw message (first %d of %d bytes): %q", logBytes, len(message), message[:logBytes])
+	l.Debug("raw message", "first_bytes", logBytes, "total_bytes", len(message), "preview", string(message[:logBytes]))
 	if len(message) > maxLogBytes {
-		log.Printf("DEBUG: ... (truncated, %d more bytes)", len(message)-maxLogBytes)
+		l.Debug("message truncated", "remaining_bytes", len(message)-maxLogBytes)
 	}
 }
 
@@ -482,55 +499,106 @@ func setResponseError(msg *Message, errMsg string) {
 func DecodeMessage(message []byte) (*Message, error) {
 	// TODO: the efficiency of this method is dubious and must be re-evaluated.
 	var msg Message
-	log.Printf("DEBUG: Decoding message: %s", string(message))
+	l := log.LoggerOrNoOp(decoderLogger)
+	if l.Enabled(log.LevelDebug) {
+		l.Debug("decoding message", "message", string(message))
+	}
+
+	// Enforce a hard upper bound on total message size to protect against
+	// bad actors and excessive memory usage.
+	if int64(len(message)) > MaxMessageSizeBytes {
+		errMsg := fmt.Sprintf("message size %d bytes exceeds maximum allowed %d bytes", len(message), MaxMessageSizeBytes)
+		l.Error("decode error", "error", errMsg)
+		logRawMessage(message)
+		setResponseError(&msg, errMsg)
+		return &msg, DecodeErrorWithField(ErrCodeDecodePayloadTooLarge, errMsg, "message")
+	}
 
 	// Validate minimum message size: 7 fields * 9 bytes each = 63 bytes
 	const minMessageSize = 63
 	if len(message) < minMessageSize {
 		errMsg := fmt.Sprintf("message too short, expected at least %d bytes, got %d bytes", minMessageSize, len(message))
-		log.Printf("ERROR: %s", errMsg)
+		l.Error("decode error", "error", errMsg)
 		logRawMessage(message)
 		setResponseError(&msg, errMsg)
 		return &msg, DecodeErrorWithField(ErrCodeDecodeMessageTooShort, errMsg, "message")
 	}
 
 	// Read the first 9 * 7 chars, in 9 char chunks to determine lengths or values.
-	_, err := decodeMessageSizeParam(message[0:9])
+	totalLength, err := decodeMessageSizeParam(message[0:9])
 	if err != nil {
 		errMsg := fmt.Sprintf("failed to decode totalLength: %s", err)
-		log.Printf("ERROR: %s", errMsg)
+		l.Error("decode error", "error", errMsg)
 		logRawMessage(message)
 		setResponseError(&msg, errMsg)
 		return &msg, WrapDecodeError(ErrCodeDecodeInvalidSizeParam, errMsg, err)
 	}
+	if totalLength <= 0 {
+		errMsg := fmt.Sprintf("invalid totalLength: %d (must be positive)", totalLength)
+		l.Error("decode error", "error", errMsg)
+		logRawMessage(message)
+		setResponseError(&msg, errMsg)
+		return &msg, DecodeErrorWithField(ErrCodeDecodeInvalidSizeParam, errMsg, "totalLength")
+	}
+	if totalLength > MaxMessageSizeBytes {
+		errMsg := fmt.Sprintf("totalLength %d bytes exceeds maximum allowed %d bytes", totalLength, MaxMessageSizeBytes)
+		l.Error("decode error", "error", errMsg)
+		logRawMessage(message)
+		setResponseError(&msg, errMsg)
+		return &msg, DecodeErrorWithField(ErrCodeDecodePayloadTooLarge, errMsg, "message")
+	}
+
 	toLength, err := decodeMessageSizeParam(message[9:18])
 	if err != nil {
 		errMsg := fmt.Sprintf("failed to decode toLength: %s", err)
-		log.Printf("ERROR: %s", errMsg)
+		l.Error("decode error", "error", errMsg)
 		logRawMessage(message)
 		setResponseError(&msg, errMsg)
 		return &msg, WrapDecodeError(ErrCodeDecodeInvalidSizeParam, errMsg, err)
 	}
+	if toLength < 0 || toLength > MaxMessageSizeBytes {
+		errMsg := fmt.Sprintf("invalid toLength: %d (must be between 0 and %d)", toLength, MaxMessageSizeBytes)
+		l.Error("decode error", "error", errMsg)
+		logRawMessage(message)
+		setResponseError(&msg, errMsg)
+		return &msg, DecodeErrorWithField(ErrCodeDecodeInvalidSizeParam, errMsg, "toLength")
+	}
+
 	fromLength, err := decodeMessageSizeParam(message[18:27])
 	if err != nil {
 		errMsg := fmt.Sprintf("failed to decode fromLength: %s", err)
-		log.Printf("ERROR: %s", errMsg)
+		l.Error("decode error", "error", errMsg)
 		logRawMessage(message)
 		setResponseError(&msg, errMsg)
 		return &msg, WrapDecodeError(ErrCodeDecodeInvalidSizeParam, errMsg, err)
 	}
+	if fromLength < 0 || fromLength > MaxMessageSizeBytes {
+		errMsg := fmt.Sprintf("invalid fromLength: %d (must be between 0 and %d)", fromLength, MaxMessageSizeBytes)
+		l.Error("decode error", "error", errMsg)
+		logRawMessage(message)
+		setResponseError(&msg, errMsg)
+		return &msg, DecodeErrorWithField(ErrCodeDecodeInvalidSizeParam, errMsg, "fromLength")
+	}
+
 	headerLength, err := decodeMessageSizeParam(message[27:36])
 	if err != nil {
 		errMsg := fmt.Sprintf("failed to decode headerLength: %s", err)
-		log.Printf("ERROR: %s", errMsg)
+		l.Error("decode error", "error", errMsg)
 		logRawMessage(message)
 		setResponseError(&msg, errMsg)
 		return &msg, WrapDecodeError(ErrCodeDecodeInvalidSizeParam, errMsg, err)
+	}
+	if headerLength < 0 || headerLength > MaxMessageSizeBytes {
+		errMsg := fmt.Sprintf("invalid headerLength: %d (must be between 0 and %d)", headerLength, MaxMessageSizeBytes)
+		l.Error("decode error", "error", errMsg)
+		logRawMessage(message)
+		setResponseError(&msg, errMsg)
+		return &msg, DecodeErrorWithField(ErrCodeDecodeInvalidSizeParam, errMsg, "headerLength")
 	}
 	_, err = decodeMessageSizeParam(message[36:45])
 	if err != nil {
 		errMsg := fmt.Sprintf("failed to decode messageType: %s", err)
-		log.Printf("ERROR: %s", errMsg)
+		l.Error("decode error", "error", errMsg)
 		logRawMessage(message)
 		setResponseError(&msg, errMsg)
 		return &msg, WrapDecodeError(ErrCodeDecodeInvalidSizeParam, errMsg, err)
@@ -538,7 +606,7 @@ func DecodeMessage(message []byte) (*Message, error) {
 	_, err = decodeMessageSizeParam(message[45:54])
 	if err != nil {
 		errMsg := fmt.Sprintf("failed to decode dataType: %s", err)
-		log.Printf("ERROR: %s", errMsg)
+		l.Error("decode error", "error", errMsg)
 		logRawMessage(message)
 		setResponseError(&msg, errMsg)
 		return &msg, WrapDecodeError(ErrCodeDecodeInvalidSizeParam, errMsg, err)
@@ -546,10 +614,17 @@ func DecodeMessage(message []byte) (*Message, error) {
 	payloadDataLength, err := decodeMessageSizeParam(message[54:63])
 	if err != nil {
 		errMsg := fmt.Sprintf("failed to decode payloadDataLength: %s", err)
-		log.Printf("ERROR: %s", errMsg)
+		l.Error("decode error", "error", errMsg)
 		logRawMessage(message)
 		setResponseError(&msg, errMsg)
 		return &msg, WrapDecodeError(ErrCodeDecodeInvalidSizeParam, errMsg, err)
+	}
+	if payloadDataLength < 0 || payloadDataLength > MaxMessageSizeBytes {
+		errMsg := fmt.Sprintf("invalid payloadDataLength: %d (must be between 0 and %d)", payloadDataLength, MaxMessageSizeBytes)
+		l.Error("decode error", "error", errMsg)
+		logRawMessage(message)
+		setResponseError(&msg, errMsg)
+		return &msg, DecodeErrorWithField(ErrCodeDecodeInvalidSizeParam, errMsg, "payloadDataLength")
 	}
 	messageSizeLength := int64(9)
 	toSizeLength := int64(9)
@@ -560,7 +635,9 @@ func DecodeMessage(message []byte) (*Message, error) {
 
 	var lengthsSize int64 = 9 * 7
 
-	// Validate that we have enough bytes for the to, from, and header fields
+	// Calculate positions of the to, from, and header fields. These calculations
+	// are validated before any slicing to protect against bad actor messages
+	// with inconsistent or malicious length fields.
 	toStart := lengthsSize
 	toEnd := lengthsSize + toLength
 	fromStart := toEnd
@@ -568,9 +645,24 @@ func DecodeMessage(message []byte) (*Message, error) {
 	headerStart := fromEnd
 	headerEnd := headerStart + headerLength
 
+	// Validate that we have enough bytes for the to, from, and header fields
+	if int64(len(message)) < toEnd {
+		errMsg := fmt.Sprintf("message too short for to field, expected at least %d bytes, got %d bytes", toEnd, len(message))
+		l.Error("decode error", "error", errMsg)
+		logRawMessage(message)
+		setResponseError(&msg, errMsg)
+		return &msg, DecodeErrorWithField(ErrCodeDecodeMessageTooShort, errMsg, "to")
+	}
+	if int64(len(message)) < fromEnd {
+		errMsg := fmt.Sprintf("message too short for from field, expected at least %d bytes, got %d bytes", fromEnd, len(message))
+		l.Error("decode error", "error", errMsg)
+		logRawMessage(message)
+		setResponseError(&msg, errMsg)
+		return &msg, DecodeErrorWithField(ErrCodeDecodeMessageTooShort, errMsg, "from")
+	}
 	if int64(len(message)) < headerEnd {
 		errMsg := fmt.Sprintf("message too short for header, expected at least %d bytes, got %d bytes", headerEnd, len(message))
-		log.Printf("ERROR: %s", errMsg)
+		l.Error("decode error", "error", errMsg)
 		logRawMessage(message)
 		setResponseError(&msg, errMsg)
 		return &msg, DecodeErrorWithField(ErrCodeDecodeMessageTooShort, errMsg, "header")
@@ -584,7 +676,7 @@ func DecodeMessage(message []byte) (*Message, error) {
 	headerMap, err := decodeHeader(string(message[headerStart:headerEnd]))
 	if err != nil {
 		errMsg := fmt.Sprintf("failed to decode header: %s", err)
-		log.Printf("ERROR: %s", errMsg)
+		l.Error("decode error", "error", errMsg)
 		logRawMessage(message)
 		setResponseError(&msg, errMsg)
 		return &msg, WrapDecodeError(ErrCodeDecodeInvalidHeader, errMsg, err)
@@ -595,7 +687,7 @@ func DecodeMessage(message []byte) (*Message, error) {
 	messageTypeEnd := messageTypeStart + messageTypeLength
 	if int64(len(message)) < messageTypeEnd {
 		errMsg := fmt.Sprintf("message too short for messageType, expected at least %d bytes, got %d bytes", messageTypeEnd, len(message))
-		log.Printf("ERROR: %s", errMsg)
+		l.Error("decode error", "error", errMsg)
 		logRawMessage(message)
 		setResponseError(&msg, errMsg)
 		return &msg, DecodeErrorWithField(ErrCodeDecodeMessageTooShort, errMsg, "messageType")
@@ -606,7 +698,7 @@ func DecodeMessage(message []byte) (*Message, error) {
 	messageType, err := strconv.Atoi(messageTypeStr)
 	if err != nil {
 		errMsg := fmt.Sprintf("failed to parse messageType: %s", err)
-		log.Printf("ERROR: %s", errMsg)
+		l.Error("decode error", "error", errMsg)
 		logRawMessage(message)
 		setResponseError(&msg, errMsg)
 		return &msg, WrapDecodeError(ErrCodeDecodeInvalidMessageType, errMsg, err)
@@ -615,7 +707,7 @@ func DecodeMessage(message []byte) (*Message, error) {
 	_, ok := transformHeaderMaptoMessageStruct(headerMap, &msg)
 	if !ok {
 		errMsg := "header transformation failed"
-		log.Printf("ERROR: %s", errMsg)
+		l.Error("decode error", "error", errMsg)
 		logRawMessage(message)
 		setResponseError(&msg, errMsg)
 		return &msg, DecodeErrorWithField(ErrCodeDecodeHeaderTransformationFailed, errMsg, "header")
@@ -638,7 +730,7 @@ func DecodeMessage(message []byte) (*Message, error) {
 		intent, found = intentFromMessageTypeInt(messageType)
 		if !found {
 			errMsg := fmt.Sprintf("unknown messageType: %d with command: %s", messageType, command)
-			log.Printf("ERROR: %s", errMsg)
+			l.Error("decode error", "error", errMsg)
 			logRawMessage(message)
 			setResponseError(&msg, errMsg)
 			return &msg, DecodeErrorWithField(ErrCodeDecodeInvalidMessageType, errMsg, "messageType")
@@ -650,7 +742,7 @@ func DecodeMessage(message []byte) (*Message, error) {
 	dataTypeEnd := dataTypeStart + dataTypeLength
 	if int64(len(message)) < dataTypeEnd {
 		errMsg := fmt.Sprintf("message too short for dataType, expected at least %d bytes, got %d bytes", dataTypeEnd, len(message))
-		log.Printf("ERROR: %s", errMsg)
+		l.Error("decode error", "error", errMsg)
 		logRawMessage(message)
 		setResponseError(&msg, errMsg)
 		return &msg, DecodeErrorWithField(ErrCodeDecodeMessageTooShort, errMsg, "dataType")
@@ -661,7 +753,7 @@ func DecodeMessage(message []byte) (*Message, error) {
 	dataType, err := strconv.Atoi(dataTypeStr)
 	if err != nil {
 		errMsg := fmt.Sprintf("failed to parse dataType: %s", err)
-		log.Printf("ERROR: %s", errMsg)
+		l.Error("decode error", "error", errMsg)
 		logRawMessage(message)
 		setResponseError(&msg, errMsg)
 		return &msg, WrapDecodeError(ErrCodeDecodeInvalidDataType, errMsg, err)
@@ -676,7 +768,7 @@ func DecodeMessage(message []byte) (*Message, error) {
 		// Validate that we have enough bytes for the payload
 		if int64(len(message)) < payloadEnd {
 			errMsg := fmt.Sprintf("message too short for payload, expected at least %d bytes, got %d bytes", payloadEnd, len(message))
-			log.Printf("ERROR: %s", errMsg)
+			l.Error("decode error", "error", errMsg)
 			logRawMessage(message)
 			setResponseError(&msg, errMsg)
 			return &msg, DecodeErrorWithField(ErrCodeDecodeMessageTooShort, errMsg, "payload")

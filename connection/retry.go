@@ -2,9 +2,10 @@ package connection
 
 import (
 	"fmt"
-	"log"
 	"math"
 	"time"
+
+	"github.com/PointOfData/pod-os-go-client/log"
 )
 
 const (
@@ -41,6 +42,7 @@ type Retry struct {
 	Backoff            time.Duration
 	BackoffMultiplier  float64
 	DisableBackoffCaps bool
+	Logger             log.Logger
 }
 
 var _ IRetry = (*Retry)(nil)
@@ -85,7 +87,8 @@ func (r *Retry) Retry(callback RetryCallback) (any, error) {
 		}
 
 		if retry > 0 {
-			log.Printf("Retry attempt %d, delay: %s", retry, backoffDuration.String())
+			logger := log.LoggerOrNoOp(r.Logger)
+			logger.Info("retry attempt", "attempt", retry, "delay", backoffDuration.String())
 		}
 
 		// Try and retry the callback.
@@ -98,7 +101,8 @@ func (r *Retry) Retry(callback RetryCallback) (any, error) {
 	}
 
 	// Log the failure but don't panic - return error for graceful handling
-	log.Printf("WARNING: Retry attempts exhausted after %d attempts, last error: %v", retry, err)
+	logger := log.LoggerOrNoOp(r.Logger)
+	logger.Warn("retry attempts exhausted", "attempts", retry, "error", err)
 
 	return nil, &ErrRetriesExhausted{
 		Attempts: retry,
@@ -115,6 +119,7 @@ func NewRetry(
 		Backoff:            rty.Backoff,
 		BackoffMultiplier:  rty.BackoffMultiplier,
 		DisableBackoffCaps: rty.DisableBackoffCaps,
+		Logger:             rty.Logger,
 	}
 
 	// If the number of retries is less than 0, set it to 0 to disable retries.

@@ -297,23 +297,26 @@ func EncodeMessage(msg *Message, conversationUuid string) (*SocketMessage, error
 		payloadDataType = msg.Payload.DataType
 	}
 
-	const maxPayloadSize = 2 * 1024 * 1024 * 1024 // 2GB
+	// Enforce a hard upper bound on payload size using the shared maximum
+	// message size. While headers and other fields also contribute to the
+	// total message size, this guard prevents obviously too-large payloads
+	// from being encoded.
 	if payloadData != nil {
 		// Check payload size for common types
 		switch v := payloadData.(type) {
 		case string:
-			if len(v) > maxPayloadSize {
-				return nil, EncodeErrorWithField(ErrCodeEncodePayloadTooLarge, fmt.Sprintf("payload size %d bytes exceeds maximum %d bytes", len(v), maxPayloadSize), "PayloadData")
+			if int64(len(v)) > MaxMessageSizeBytes {
+				return nil, EncodeErrorWithField(ErrCodeEncodePayloadTooLarge, fmt.Sprintf("payload size %d bytes exceeds maximum %d bytes", len(v), MaxMessageSizeBytes), "PayloadData")
 			}
 		case []byte:
-			if len(v) > maxPayloadSize {
-				return nil, EncodeErrorWithField(ErrCodeEncodePayloadTooLarge, fmt.Sprintf("payload size %d bytes exceeds maximum %d bytes", len(v), maxPayloadSize), "PayloadData")
+			if int64(len(v)) > MaxMessageSizeBytes {
+				return nil, EncodeErrorWithField(ErrCodeEncodePayloadTooLarge, fmt.Sprintf("payload size %d bytes exceeds maximum %d bytes", len(v), MaxMessageSizeBytes), "PayloadData")
 			}
 		case []BatchEventSpec:
 			// Estimate size for batch events
 			estimatedSize := len(v) * 500 // Rough estimate
-			if estimatedSize > maxPayloadSize {
-				return nil, EncodeErrorWithField(ErrCodeEncodePayloadTooLarge, fmt.Sprintf("estimated payload size %d bytes exceeds maximum %d bytes", estimatedSize, maxPayloadSize), "PayloadData")
+			if int64(estimatedSize) > MaxMessageSizeBytes {
+				return nil, EncodeErrorWithField(ErrCodeEncodePayloadTooLarge, fmt.Sprintf("estimated payload size %d bytes exceeds maximum %d bytes", estimatedSize, MaxMessageSizeBytes), "PayloadData")
 			}
 		}
 	}
@@ -474,6 +477,14 @@ func EncodeMessage(msg *Message, conversationUuid string) (*SocketMessage, error
 		len(messageTypeEncoded) +
 		len(dataTypeEncoded) +
 		len(dataBytes) + 9 + 9 // 9 for the total Length field.
+
+	if int64(totalLength) > MaxMessageSizeBytes {
+		return nil, EncodeErrorWithField(
+			ErrCodeEncodePayloadTooLarge,
+			fmt.Sprintf("encoded message size %d bytes exceeds maximum %d bytes", totalLength, MaxMessageSizeBytes),
+			"message",
+		)
+	}
 	totalLengthEncoded := "x" + fmt.Sprintf("%08x", totalLength)
 
 	// Construct the SocketMessage

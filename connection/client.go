@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"strconv"
 	"sync"
@@ -13,6 +12,7 @@ import (
 	"time"
 
 	"github.com/PointOfData/pod-os-go-client/errors"
+	"github.com/PointOfData/pod-os-go-client/log"
 )
 
 // Tracer interface for optional OpenTelemetry support
@@ -45,6 +45,7 @@ func (n NoOpSpan) AddEvent(name string)  {}
 type ClientConfig struct {
 	TracerName     string
 	Tracer         Tracer        // Optional tracer, defaults to NoOpTracer
+	Logger         log.Logger   // Optional logger, defaults to NoOpLogger
 	DialTimeout    time.Duration // Timeout for establishing connection
 	SendTimeout    time.Duration // Timeout for send operations (SendDeadline)
 	ReceiveTimeout time.Duration // Timeout for receive operations
@@ -89,6 +90,7 @@ type Client struct {
 	ActorName string // this functions as the ID; aka what to search for for a specific client connection.
 
 	tracer Tracer
+	logger log.Logger
 }
 
 var _ IClient = (*Client)(nil)
@@ -99,6 +101,7 @@ func NewClient(ctx context.Context, cfg ClientConfig, network string, host strin
 	if cfg.Tracer != nil {
 		tracer = cfg.Tracer
 	}
+	logger := log.LoggerOrNoOp(cfg.Logger)
 
 	clientCtx, span := tracer.Start(ctx, "NewClient")
 	defer span.End()
@@ -112,14 +115,15 @@ func NewClient(ctx context.Context, cfg ClientConfig, network string, host strin
 
 	client.connected.Store(false)
 	client.tracer = tracer
+	client.logger = logger
 
 	// Try to resolve the address and log an error if it can't be resolved.
 	addr, err := Resolve(network, net.JoinHostPort(host, port))
 	if err != nil {
-		log.Printf("failed to resolve address: %v", err)
+		logger.Error("failed to resolve address", "error", err)
 		span.RecordError(err)
 	}
-	log.Printf("address resolved in NewClient(): %s", addr)
+	logger.Info("address resolved", "addr", addr)
 
 	// Set default timeouts if not provided in config
 	dialTimeout := cfg.DialTimeout
@@ -158,7 +162,7 @@ func NewClient(ctx context.Context, cfg ClientConfig, network string, host strin
 	}
 	if clientErrors != nil || client.Conn == nil {
 		err := errors.ErrClientConnectionFailed.Wrap(clientErrors)
-		log.Printf("failed to create a new connection in NewClient(): %v", err)
+		logger.Error("failed to create connection", "error", err)
 		span.RecordError(err)
 		return nil
 	}
@@ -171,11 +175,11 @@ func NewClient(ctx context.Context, cfg ClientConfig, network string, host strin
 
 	if c, ok := client.Conn.(*net.TCPConn); ok {
 		if err := c.SetKeepAlive(client.TCPKeepAlive); err != nil {
-			log.Printf("failed to set keep alive in NewClient(): %v", err)
+			logger.Warn("failed to set keep alive", "error", err)
 			span.RecordError(err)
 		} else {
 			if err := c.SetKeepAlivePeriod(client.TCPKeepAlivePeriod); err != nil {
-				log.Printf("failed to set keep alive period in NewClient(): %v", err)
+				logger.Warn("failed to set keep alive period", "error", err)
 				span.RecordError(err)
 			}
 		}
@@ -193,10 +197,10 @@ func NewClient(ctx context.Context, cfg ClientConfig, network string, host strin
 	client.ReceiveDeadline = 0
 	if client.ReceiveDeadline > 0 {
 		if err := client.Conn.SetReadDeadline(time.Now().Add(client.ReceiveDeadline)); err != nil {
-			log.Printf("failed to set receive deadline in NewClient(): %v", err)
+			logger.Warn("failed to set receive deadline", "error", err)
 			span.RecordError(err)
-		} else {
-			log.Printf("set receive deadline in NewClient()")
+		} else if logger.Enabled(log.LevelDebug) {
+			logger.Debug("set receive deadline")
 		}
 	}
 
@@ -208,10 +212,10 @@ func NewClient(ctx context.Context, cfg ClientConfig, network string, host strin
 	client.SendDeadline = sendTimeout
 	if client.SendDeadline > 0 {
 		if err := client.Conn.SetWriteDeadline(time.Now().Add(client.SendDeadline)); err != nil {
-			log.Printf("failed to set send deadline in NewClient(): %v", err)
+			logger.Warn("failed to set send deadline", "error", err)
 			span.RecordError(err)
-		} else {
-			log.Printf("Set send deadline in NewClient to %v", client.SendDeadline)
+		} else if logger.Enabled(log.LevelDebug) {
+			logger.Debug("set send deadline", "deadline", client.SendDeadline)
 		}
 	}
 
@@ -219,7 +223,7 @@ func NewClient(ctx context.Context, cfg ClientConfig, network string, host strin
 	// in chunks. This is incremented as needed.
 	client.ReceiveChunkSize = 512
 
-	log.Printf("new client created for %s", addr)
+	logger.Info("client created", "addr", addr)
 	client.ActorName = actorName
 
 	return &client
@@ -239,7 +243,7 @@ func (c *Client) Send(data []byte) (int, *errors.GatewayDError) {
 	// This ensures the deadline is fresh for each write, preventing timeouts on idle connections or longer writes
 	if c.SendDeadline > 0 {
 		if err := c.Conn.SetWriteDeadline(time.Now().Add(c.SendDeadline)); err != nil {
-			log.Printf("Failed to set write deadline: %v", err)
+			c.logger.Warn("failed to set write deadline", "error", err)
 			span.RecordError(err)
 			// Continue anyway - the deadline might still be valid
 		}
@@ -260,7 +264,7 @@ func (c *Client) Send(data []byte) (int, *errors.GatewayDError) {
 		written, err := c.Conn.Write(data[sent:])
 		if err != nil {
 			// Log the error but don't panic - return error for caller to handle
-			log.Printf("Couldn't send data to the server: %v", err)
+			c.logger.Error("failed to send data", "error", err)
 			span.RecordError(err)
 			return sent, errors.ErrClientSendFailed.Wrap(err)
 		}
@@ -270,7 +274,7 @@ func (c *Client) Send(data []byte) (int, *errors.GatewayDError) {
 			zeroWriteCount++
 			if zeroWriteCount >= maxZeroWrites {
 				err := fmt.Errorf("write returned 0 bytes %d times consecutively", maxZeroWrites)
-				log.Printf("Unexpected write behavior: %v", err)
+				c.logger.Error("unexpected write behavior", "error", err)
 				span.RecordError(err)
 				return sent, errors.ErrClientSendFailed.Wrap(err)
 			}
@@ -280,8 +284,9 @@ func (c *Client) Send(data []byte) (int, *errors.GatewayDError) {
 
 		sent += written
 	}
-	log.Printf("sent data to the server %s, of %d length", c.Host, sent)
-	// log.Printf("DEBUG: Sent Message Dump: %s", string(data))
+	if c.logger.Enabled(log.LevelDebug) {
+		c.logger.Debug("sent data", "host", c.Host, "bytes", sent)
+	}
 
 	span.AddEvent("sent data to server")
 
@@ -383,7 +388,7 @@ func (c *Client) Receive(ctx context.Context) (int, []byte, *errors.GatewayDErro
 		}
 
 		if err := c.Conn.SetReadDeadline(readDeadline); err != nil {
-			log.Printf("Failed to set read deadline: %v", err)
+			c.logger.Warn("failed to set read deadline", "error", err)
 			// Continue anyway
 		}
 
@@ -399,11 +404,13 @@ func (c *Client) Receive(ctx context.Context) (int, []byte, *errors.GatewayDErro
 				// Check if we still have time in the context
 				if ctx.Err() == nil {
 					// Context hasn't expired, continue reading with a fresh deadline
-					log.Printf("Read timeout on length prefix, but context still valid. Continuing...")
+					if c.logger.Enabled(log.LevelDebug) {
+						c.logger.Debug("read timeout on length prefix, context still valid")
+					}
 					continue
 				}
 			}
-			log.Printf("Couldn't read length prefix from server: %s: %v", c.Host, err)
+			c.logger.Error("failed to read length prefix", "host", c.Host, "error", err)
 			span.RecordError(err)
 			return totalRead, nil, errors.ErrClientReceiveFailed.Wrap(err)
 		}
@@ -419,8 +426,7 @@ func (c *Client) Receive(ctx context.Context) (int, []byte, *errors.GatewayDErro
 	if !isValidLengthPrefix(lengthPrefix) {
 		// Connection appears to be out of sync - we're reading from the wrong position
 		prefixStr := string(lengthPrefix)
-		log.Printf("ERROR: Connection out of sync - received invalid length prefix: %q (first 9 bytes)", prefixStr)
-		log.Printf("ERROR: This usually means the previous message wasn't fully consumed or multiple messages were sent")
+		c.logger.Error("connection out of sync", "prefix", prefixStr, "msg", "invalid length prefix - previous message may not have been fully consumed")
 		span.RecordError(fmt.Errorf("connection out of sync: invalid length prefix"))
 		return totalRead, nil, errors.ErrClientReceiveFailed.Wrap(fmt.Errorf("connection out of sync: expected message length prefix but received %q - this usually indicates the previous message wasn't fully consumed or the connection buffer has leftover data", prefixStr))
 	}
@@ -555,7 +561,7 @@ func (c *Client) Receive(ctx context.Context) (int, []byte, *errors.GatewayDErro
 		}
 
 		if err := c.Conn.SetReadDeadline(readDeadline); err != nil {
-			log.Printf("Failed to set read deadline: %v", err)
+			c.logger.Warn("failed to set read deadline", "error", err)
 			// Continue anyway
 		}
 
@@ -594,11 +600,13 @@ func (c *Client) Receive(ctx context.Context) (int, []byte, *errors.GatewayDErro
 						return totalRead, buffer.Bytes(), errors.ErrClientReceiveFailed.Wrap(fmt.Errorf("activity timeout: no data received for %v (expected transfer rate not met, remaining bytes: %d)", timeSinceLastActivity, remainingBytes))
 					}
 					// Context hasn't expired and activity timeout hasn't been exceeded, continue reading with a fresh deadline
-					log.Printf("Read timeout on chunk, but context still valid. Continuing to read remaining %d bytes...", remainingBytes)
+					if c.logger.Enabled(log.LevelDebug) {
+						c.logger.Debug("read timeout on chunk, continuing", "remaining_bytes", remainingBytes)
+					}
 					continue
 				}
 			}
-			log.Printf("Couldn't receive data from the server: %s: %v", c.Host, err)
+			c.logger.Error("failed to receive data", "host", c.Host, "error", err)
 			span.RecordError(err)
 			return totalRead, buffer.Bytes(), errors.ErrClientReceiveFailed.Wrap(err)
 		}
@@ -655,13 +663,13 @@ func (c *Client) Reconnect() error {
 		}
 	}
 	if _aiperrors != nil {
-		log.Printf("failed to reconnect %s: %v", net.JoinHostPort(c.Host, c.Port), _aiperrors)
+		c.logger.Error("failed to reconnect", "addr", net.JoinHostPort(c.Host, c.Port), "error", _aiperrors)
 		span.RecordError(_aiperrors)
 		return errors.ErrClientConnectionFailed.Wrap(_aiperrors)
 	}
 
 	c.connected.Store(true)
-	log.Printf("Reconnected to server %s for Actor %s", net.JoinHostPort(c.Host, c.Port), c.ActorName)
+	c.logger.Info("reconnected to server", "addr", net.JoinHostPort(c.Host, c.Port), "actor", c.ActorName)
 	span.AddEvent("Reconnected to server")
 
 	return nil
@@ -680,16 +688,16 @@ func (c *Client) Close() {
 	// Ref: https://groups.google.com/g/golang-nuts/c/VPVWFrpIEyo
 	if c.Conn != nil {
 		if err := c.Conn.SetDeadline(time.Now()); err != nil {
-			log.Printf("Failed to set deadline: %v", err)
+			c.logger.Warn("failed to set deadline", "error", err)
 			span.RecordError(err)
 		}
 	}
 
 	c.connected.Store(false)
-	log.Printf("Closing connection to server %s for Actor %s", net.JoinHostPort(c.Host, c.Port), c.ActorName)
+	c.logger.Info("closing connection", "addr", net.JoinHostPort(c.Host, c.Port), "actor", c.ActorName)
 	if c.Conn != nil {
 		if err := c.Conn.Close(); err != nil {
-			log.Printf("Failed to close connection to %s for Actor %s: %v", net.JoinHostPort(c.Host, c.Port), c.ActorName, err)
+			c.logger.Error("failed to close connection", "addr", net.JoinHostPort(c.Host, c.Port), "actor", c.ActorName, "error", err)
 			span.RecordError(err)
 		}
 	}
@@ -715,7 +723,9 @@ func (c *Client) IsConnected() bool {
 	}
 
 	if c.Conn == nil {
-		log.Printf("connection to server %s is closed as nil or invalid for Actor %s", net.JoinHostPort(c.Host, c.Port), c.ActorName)
+		if c.logger.Enabled(log.LevelDebug) {
+			c.logger.Debug("connection closed", "addr", net.JoinHostPort(c.Host, c.Port), "actor", c.ActorName)
+		}
 		return false
 	}
 

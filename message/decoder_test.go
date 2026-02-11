@@ -1,6 +1,7 @@
 package message
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -176,5 +177,113 @@ func TestDecodeMessage_HeaderPriorityForCommand(t *testing.T) {
 	// _type should take priority, so intent should be GetEventResponse
 	if decoded.Intent.Name != "GetEventResponse" {
 		t.Errorf("DecodeMessage() Intent.Name = %q, want GetEventResponse (from _type)", decoded.Intent.Name)
+	}
+}
+
+// =============================================================================
+// LIMIT & BAD-ACTOR TESTS
+// =============================================================================
+
+// buildRawMessageWithCustomLengths builds a raw message where the declared
+// length fields can be intentionally inconsistent with the actual body, to
+// simulate bad-actor or malformed inputs.
+func buildRawMessageWithCustomLengths(
+	totalLen, toLen, fromLen, headerLen, messageType, dataType, payloadLen int,
+	to, from, header, payload string,
+) []byte {
+	var msg strings.Builder
+	msg.WriteString(fmt.Sprintf("%09d", totalLen))
+	msg.WriteString(fmt.Sprintf("%09d", toLen))
+	msg.WriteString(fmt.Sprintf("%09d", fromLen))
+	msg.WriteString(fmt.Sprintf("%09d", headerLen))
+	msg.WriteString(fmt.Sprintf("%09d", messageType))
+	msg.WriteString(fmt.Sprintf("%09d", dataType))
+	msg.WriteString(fmt.Sprintf("%09d", payloadLen))
+	msg.WriteString(to)
+	msg.WriteString(from)
+	msg.WriteString(header)
+	msg.WriteString(payload)
+	return []byte(msg.String())
+}
+
+func TestDecodeMessage_RejectsOversizeMessageByLength(t *testing.T) {
+	originalMax := MaxMessageSizeBytes
+	defer func() { MaxMessageSizeBytes = originalMax }()
+
+	// Use a small max size to keep the test fast and memory-safe.
+	MaxMessageSizeBytes = 64
+
+	// Build a valid minimal message that exceeds the artificial 64-byte limit.
+	payload := strings.Repeat("x", 80)
+	msg := buildMinimalMessage(
+		"actor@gateway.example.com",
+		"client@gateway.example.com",
+		"_status=OK",
+		1001,
+		0,
+		payload,
+	)
+
+	decoded, err := DecodeMessage(msg)
+	if err == nil {
+		t.Fatalf("expected DecodeMessage to fail for oversize message, got nil error and message %+v", decoded)
+	}
+
+	if !IsDecodeError(err) {
+		t.Fatalf("expected DecodeMessage error to be DecodeError, got %T: %v", err, err)
+	}
+	var decErr *DecodeError
+	if !errors.As(err, &decErr) {
+		t.Fatalf("expected DecodeError, got %T: %v", err, err)
+	}
+	if decErr.Code != ErrCodeDecodePayloadTooLarge {
+		t.Errorf("DecodeError.Code = %d, want ErrCodeDecodePayloadTooLarge (%d)", decErr.Code, ErrCodeDecodePayloadTooLarge)
+	}
+}
+
+func TestDecodeMessage_HeaderLengthBeyondAvailableBytes(t *testing.T) {
+	// Use the default MaxMessageSizeBytes; message is tiny.
+
+	to := "actor@gateway.example.com"
+	from := "client@gateway.example.com"
+	header := "_status=OK"
+	payload := ""
+
+	toLen := len(to)
+	fromLen := len(from)
+	declaredHeaderLen := 100 // Deliberately larger than actual header length
+	payloadLen := len(payload)
+
+	// totalLen is declared based on the (too-large) header length field.
+	totalLen := 7*9 + toLen + fromLen + declaredHeaderLen + payloadLen
+
+	msg := buildRawMessageWithCustomLengths(
+		totalLen,
+		toLen,
+		fromLen,
+		declaredHeaderLen,
+		1001,
+		0,
+		payloadLen,
+		to,
+		from,
+		header,
+		payload,
+	)
+
+	decoded, err := DecodeMessage(msg)
+	if err == nil {
+		t.Fatalf("expected DecodeMessage to fail for truncated header, got nil error and message %+v", decoded)
+	}
+
+	if !IsDecodeError(err) {
+		t.Fatalf("expected DecodeMessage error to be DecodeError, got %T: %v", err, err)
+	}
+	var decErr *DecodeError
+	if !errors.As(err, &decErr) {
+		t.Fatalf("expected DecodeError, got %T: %v", err, err)
+	}
+	if decErr.Code != ErrCodeDecodeMessageTooShort || decErr.Field != "header" {
+		t.Errorf("DecodeError = {Code:%d, Field:%q}, want Code ErrCodeDecodeMessageTooShort and Field \"header\"", decErr.Code, decErr.Field)
 	}
 }
