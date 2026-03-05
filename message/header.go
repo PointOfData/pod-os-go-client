@@ -280,32 +280,6 @@ func StoreBatchTagsMessageHeader(msg *Message) string {
 	return _header.String()
 }
 
-// UpdateBatchTagsMessageHeader constructs header string to update tags for an event.
-// Uses _db_cmd=update_tag_batch. Same structure as StoreBatchTagsMessageHeader.
-func UpdateBatchTagsMessageHeader(msg *Message) string {
-	var _header strings.Builder
-	_header.WriteString("_db_cmd=" + "update_tag_batch" + "\t")
-
-	// Event identifier: UniqueId OR Id (required)
-	if msg.Event.UniqueId != "" {
-		_header.WriteString("unique_id=" + msg.Event.UniqueId + "\t")
-	} else if msg.Event.Id != "" {
-		_header.WriteString("event_id=" + forceASCII(msg.Event.Id) + "\t")
-	}
-
-	// Owner: Owner OR OwnerUniqueID (required)
-	if msg.Event.Owner != "" {
-		_header.WriteString("owner=" + msg.Event.Owner + "\t")
-	} else if msg.Event.OwnerUniqueID != "" {
-		_header.WriteString("owner_unique_id=" + msg.Event.OwnerUniqueID + "\t")
-	}
-
-	if msg.MessageId != "" {
-		_header.WriteString("_msg_id=" + msg.MessageId)
-	}
-	return _header.String()
-}
-
 // GetEventMessageHeader constructs the _get_ event message header.
 //
 // Params:

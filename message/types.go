@@ -102,6 +102,8 @@ type EventFields struct {
 	Tags              []TagOutput    `podos:"tags"`      // Tags for the event; for use when processing a Response message.
 	Links             []LinkFields   `podos:"links"`     // Links for the event; for use when processing a Response message.
 	PayloadData       PayloadFields  // Payload data; for use when processing a Response message so that Payload data is logically associated with the Event represented by EventFields.
+	Status            string         `podos:"_status"` // Status of the event; used in StoreBatchEvents response
+	Hits              int            `podos:"_hits"`   // Total search term match hits across this event object (from GetEventsForTags response)
 
 }
 
@@ -134,6 +136,7 @@ type NeuralMemoryFields struct {
 	// Link operations
 	Link       *LinkFields          // Single link operation
 	BatchLinks []BatchLinkEventSpec // Batch link operations
+	Unlink     *LinkFields          // Single unlink operation
 
 	// Tags for storage operations
 	Tags        TagList          // Tags to store with an event
@@ -186,11 +189,11 @@ type GetEventsForTagsOptions struct {
 	GetEventObjectCount bool   `podos:"get_eo_count"`             // Special flag requesting the total number of event objects in the database, regardless of type. No other operation is performed. The return message header will contain: event_count=<N> where N is a numeric value.
 
 	// Search configuration (shared with SearchOptions)
-	BufferResults      bool   `podos:"buffer_results"`    // Y: Send all results in a single message, using the payload section of the message, N: Send results in a series of individual result messages
-	IncludeTagStats    bool   `podos:"include_tag_stats"` // Y: Includes statistics for each tag value that resulted in a match hit.
-	InvertHitTagFilter bool   // Invert the hit tag filter
-	HitTagFilter       string // Filter for result tags
-	BufferFormat       string // Output format: 0 = format a, 1 = format b
+	BufferResults      bool   `podos:"buffer_results"`        // Y: Send all results in a single message, using the payload section of the message, N: Send results in a series of individual result messages
+	IncludeTagStats    bool   `podos:"include_tag_stats"`     // Y: Includes statistics for each tag value that resulted in a match hit.
+	InvertHitTagFilter bool   `podos:"invert_hit_tag_filter"` // Invert the hit tag filter
+	HitTagFilter       string `podos:"hit_tag_filter"`        // Filter for result tags
+	BufferFormat       string `podos:"buffer_format"`         // Output format: 0 = format a, 1 = format b
 }
 
 // SearchOptions contains programmable search configuration.
@@ -225,7 +228,9 @@ type LinkFields struct {
 	OwnerUniqueID     string         `podos:"owner_unique_id"` // Owner unique ID; required field if OwnerID is not provided. This is logically different from the Event owner Ids.
 	OwnerID           string         `podos:"owner_event_id"`  // Owner ID; required field if OwnerUniqueID is not provided. This is logically different from the Event owner Ids.
 	Tags              []TagOutput    `podos:"tags"`            // Tags for this link; populated from _linktag records
-	TargetTags        []TagOutput    `podos:"target_tags"`     // Tags describing the target event; populated from _targettag records
+	TargetTags        []TagOutput    `podos:"target_tags"`     // Tags describing the target event; populated from _targettag records; this is a convenience field for the developer to access the target tags without an additional call.
+	Status            string         `podos:"_status"`         // Status of the link; used in StoreBatchLinks response
+	Message           string         `podos:"_msg"`            // Message of the link; used in StoreBatchLinks response
 }
 
 // =============================================================================
@@ -249,9 +254,9 @@ type ResponseFields struct {
 	StorageSuccessCount int            // Number of successfully stored events
 
 	// Batch-specific response fields
-	EventRecords               []EventFields               // Parsed event results; used in GetEventsForTags and GetEvent responses
-	StoreLinkBatchEventRecords []StoreLinkBatchEventRecord // Parsed link event results; used in LinkEventBatch response
-	StoreBatchEventRecords     []StoreBatchEventRecord     // Parsed event results; used in StoreBatchEvents response
+	EventRecords              []EventFields             // Parsed event results; used in GetEventsForTags and GetEvent responses
+	StoreLinkBatchEventRecord StoreLinkBatchEventRecord // Parsed link event results; used in LinkEventBatch response
+	StoreBatchEventRecord     StoreBatchEventRecord     // Parsed event results; used in StoreBatchEvents response
 
 	// GetEventsForTags-specific response fields
 	MatchTermCount int  // Number of different matching tag values; used in GetEventsForTags response
@@ -262,19 +267,19 @@ type ResponseFields struct {
 }
 
 type StoreBatchEventRecord struct {
-	Status         string `podos:"_status"`
-	Message        string `podos:"_msg"`
-	Hits           int    `podos:"_hits"`             //Total number of search term match hits across the event object
-	LinkCount      int    `podos:"_link_count"`       //Total number of links found across the event object. Requires count_match_links=Y in the Request header.
-	MatchTermCount int    `podos:"_match_term_count"` // Number of matching terms found for the matching event object. Requires include_tag_stats=Y in the Request header.
-	TagHits        int    `podos:"tag_stat"`          // Number of hits for each matching tag value. Format: <tag freq>:<tag value>.  Requires include_tag_stats=Y in the Request header. The frequency value is for the event object, not all event objects in the database.
-	EventFields
+	Status       string        `podos:"_status"`
+	Message      string        `podos:"_msg"`
+	EventCount   int           `podos:"_count"` // Total number of Events stored.
+	EventResults []EventFields // Event results; used in StoreBatchEvents response
 }
 
 type StoreLinkBatchEventRecord struct {
-	Status  string `podos:"_status"`
-	Message string `podos:"_msg"`
-	LinkFields
+	Status                 string       `podos:"_status"`
+	Message                string       `podos:"_msg"`
+	TotalLinkRequestsFound int          `podos:"_total_link_requests_found"`
+	LinksOk                int          `podos:"_links_ok"`
+	LinksWithErrors        int          `podos:"_links_with_errors"`
+	LinkResults            []LinkFields // Link results; used in StoreBatchLinks response
 }
 
 // BriefHitRecord represents a brief hit result from GetEventsForTags with include_brief_hits=Y
@@ -595,10 +600,13 @@ type TagOutputList TagOutput
 
 // TagOutput represents a parsed tag from response payload.
 type TagOutput struct {
-	Frequency int
-	Category  string
-	Key       string
-	Value     string
+	Frequency   int
+	Category    string
+	Key         string
+	Value       string
+	Owner       string
+	Timestamp   string
+	TargetTagId string // ID of the target tag; used to identify the target tag in the response.
 }
 
 // =============================================================================

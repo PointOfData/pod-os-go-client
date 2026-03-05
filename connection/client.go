@@ -136,7 +136,8 @@ func NewClient(ctx context.Context, cfg ClientConfig, network string, host strin
 		ctx:         clientCtx,
 		mu:          sync.Mutex{},
 		retry:       retry,
-		tracer:      tracer, // Preserve tracer that was set earlier
+		tracer:      tracer,  // Preserve tracer that was set earlier
+		logger:      logger,  // Preserve logger — must not be dropped here
 		Network:     network,
 		Host:        host,
 		Port:        port,

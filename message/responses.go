@@ -411,13 +411,15 @@ func parseEventTagPayloadField(recordMap map[string]string) *TagOutput {
 	return tag
 }
 
-// ParseStoreBatchEventsPayload parses the payload for StoreBatchEvents response
-func parseStoreBatchEventsPayload(msg *Message) (storeBatchResults []StoreBatchEventRecord, ok bool) {
-	var results []StoreBatchEventRecord
+// ParseStoreBatchEventsPayload parses the payload for StoreBatchEvents response.
+// Returns a single StoreBatchEventRecord whose EventResults slice holds one entry per
+// line in the payload, and whose Status/Message/EventCount reflect the first record's
+// aggregate fields.
+func parseStoreBatchEventsPayload(msg *Message) (result *StoreBatchEventRecord, ok bool) {
+	result = &StoreBatchEventRecord{}
 
 	// Split by newlines to get individual records
 	lines := strings.Split(msg.Payload.Data.(string), "\n")
-	// remove trailing \x00 from line
 	for i, line := range lines {
 		lines[i] = strings.TrimRight(line, "\x00")
 	}
@@ -431,12 +433,10 @@ func parseStoreBatchEventsPayload(msg *Message) (storeBatchResults []StoreBatchE
 		} else if line == "\x00" { // END marker
 			break
 		}
-		resStoreBatchRecord := &StoreBatchEventRecord{}
 
-		// Parse each line as an equals-sign separated key=value pairs; capture the storage status and message
+		// Parse each line as tab-separated key=value pairs
 		recordMap := make(map[string]string)
 		fields := strings.Split(line, "\t")
-
 		for _, field := range fields {
 			if field == "" {
 				continue
@@ -447,19 +447,36 @@ func parseStoreBatchEventsPayload(msg *Message) (storeBatchResults []StoreBatchE
 			}
 		}
 
-		// Capture the storage status and message from the record
-		resStoreBatchRecord.Status = recordMap["_status"]
-		resStoreBatchRecord.Message = recordMap["_msg"]
-
-		// Extract Event fields from the payload
-		resEvent, ok := decodeEventFields(recordMap, &resStoreBatchRecord.EventFields)
-		if !ok {
-			return nil, false
+		// Capture aggregate status/message/count from the first line that has them
+		if result.Status == "" {
+			if s, exists := recordMap["_status"]; exists {
+				result.Status = s
+			}
 		}
-		resStoreBatchRecord.EventFields = *resEvent
-		results = append(results, *resStoreBatchRecord)
+		if result.Message == "" {
+			if m, exists := recordMap["_msg"]; exists {
+				result.Message = m
+			}
+		}
+		if result.EventCount == 0 {
+			if c, exists := recordMap["_count"]; exists {
+				if n, err := strconv.Atoi(c); err == nil {
+					result.EventCount = n
+				}
+			}
+		}
+
+		// Decode and collect event fields
+		var ef EventFields
+		if resEvent, decoded := decodeEventFields(recordMap, &ef); decoded {
+			result.EventResults = append(result.EventResults, *resEvent)
+		}
 	}
-	return results, true
+
+	if result.EventCount == 0 {
+		result.EventCount = len(result.EventResults)
+	}
+	return result, true
 }
 
 // parseGetEventPayload parses the payload for GetEvent response
@@ -482,8 +499,19 @@ func parseGetEventResponse(msg *Message, headerMap *map[string]string) (tags []T
 	// Decode Header fields
 	tags = parseEventTagHeaders(msg, headerMap)
 
-	payloadStr, ok := msg.Payload.Data.(string)
-	if !ok {
+	var payloadStr string
+	switch v := msg.Payload.Data.(type) {
+	case string:
+		payloadStr = v
+	case []byte:
+		// When get_links=Y takes precedence over send_data, the server may return
+		// link records as raw bytes with an application/octet-stream MIME type.
+		// Treat as UTF-8 text so the link record parser can process it.
+		payloadStr = string(v)
+	default:
+		return tags, links, true
+	}
+	if payloadStr == "" {
 		return tags, links, true
 	}
 
@@ -715,13 +743,15 @@ func parseLinkTagFields(fields []string) *TagOutput {
 	return tag
 }
 
-// parseLinkEventBatchPayload parses the payload for StoreBatchLinks response
+// parseLinkEventBatchPayload parses the payload for StoreBatchLinks response.
 // Payload format: newline-terminated records of tab-delimited fields:
 // _status, _status_info (Message), unique_id, owner_unique_id, owner_id, owner, timestamp,
 // loc, loc_delim, type, event_id_a, event_id_b, unique_id_a, unique_id_b,
 // strength_a, strength_b, category
-func parseLinkEventBatchPayload(msg *Message) (storeLinkBatchResults []StoreLinkBatchEventRecord, ok bool) {
-	var results []StoreLinkBatchEventRecord
+// Returns a single StoreLinkBatchEventRecord whose LinkResults slice holds one entry per
+// link line, and whose Status/Message/counts reflect the first record's aggregate fields.
+func parseLinkEventBatchPayload(msg *Message) (result *StoreLinkBatchEventRecord, ok bool) {
+	result = &StoreLinkBatchEventRecord{}
 
 	payloadStr, isString := msg.Payload.Data.(string)
 	if !isString {
@@ -730,7 +760,6 @@ func parseLinkEventBatchPayload(msg *Message) (storeLinkBatchResults []StoreLink
 
 	// Split by newlines to get individual records
 	lines := strings.Split(payloadStr, "\n")
-	// remove trailing \x00 from line
 	for i, line := range lines {
 		lines[i] = strings.TrimRight(line, "\x00")
 	}
@@ -745,13 +774,9 @@ func parseLinkEventBatchPayload(msg *Message) (storeLinkBatchResults []StoreLink
 			break
 		}
 
-		// Capture the storage status and message
-		resLinkRecord := &StoreLinkBatchEventRecord{}
-
 		// Parse each line as tab-separated key=value pairs
 		recordMap := make(map[string]string)
 		fields := strings.Split(line, "\t")
-
 		for _, field := range fields {
 			if field == "" {
 				continue
@@ -762,18 +787,43 @@ func parseLinkEventBatchPayload(msg *Message) (storeLinkBatchResults []StoreLink
 			}
 		}
 
-		// Parse status fields
-		if status, exists := recordMap["_status"]; exists {
-			resLinkRecord.Status = status
+		// Capture aggregate status/message/counts from the first line that has them
+		if result.Status == "" {
+			if s, exists := recordMap["_status"]; exists {
+				result.Status = s
+			}
 		}
-		if statusInfo, exists := recordMap["_status_info"]; exists {
-			resLinkRecord.Message = statusInfo
-		} else if msg, exists := recordMap["_msg"]; exists {
-			resLinkRecord.Message = msg
+		if result.Message == "" {
+			if statusInfo, exists := recordMap["_status_info"]; exists {
+				result.Message = statusInfo
+			} else if m, exists := recordMap["_msg"]; exists {
+				result.Message = m
+			}
+		}
+		if result.TotalLinkRequestsFound == 0 {
+			if v, exists := recordMap["_total_link_requests_found"]; exists {
+				if n, err := strconv.Atoi(v); err == nil {
+					result.TotalLinkRequestsFound = n
+				}
+			}
+		}
+		if result.LinksOk == 0 {
+			if v, exists := recordMap["_links_ok"]; exists {
+				if n, err := strconv.Atoi(v); err == nil {
+					result.LinksOk = n
+				}
+			}
+		}
+		if result.LinksWithErrors == 0 {
+			if v, exists := recordMap["_links_with_errors"]; exists {
+				if n, err := strconv.Atoi(v); err == nil {
+					result.LinksWithErrors = n
+				}
+			}
 		}
 
-		// Parse all LinkFields
-		link := &resLinkRecord.LinkFields
+		// Build a LinkFields for this line and append to LinkResults
+		var link LinkFields
 
 		// Link IDs
 		if uniqueId, exists := recordMap["unique_id"]; exists {
@@ -845,8 +895,8 @@ func parseLinkEventBatchPayload(msg *Message) (storeLinkBatchResults []StoreLink
 			link.Category = category
 		}
 
-		results = append(results, *resLinkRecord)
+		result.LinkResults = append(result.LinkResults, link)
 	}
 
-	return results, true
+	return result, true
 }

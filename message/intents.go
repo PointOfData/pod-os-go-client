@@ -45,6 +45,7 @@ type intentTypes struct {
 	GatewayNoSend            Intent // ActorNoSend is used to tell the Actor to not send the next message to the client.
 	GatewayStreamOff         Intent // ActorStreamOff is used to turn off the streaming of messages from the Actor to the client.
 	GatewayStreamOn          Intent // ActorStreamOn is used to turn on the streaming of messages from the Actor to the client.
+	GatewayStatus            Intent // GatewayStatus is used to get gateway status (response-only intent; same as Status for compatibility).
 	ActorRecord              Intent // ActorRecord is used to record a message from the client to the Actor.
 	GatewayBatchStart        Intent // ActorBatchStart is used to start a batch of messages from the client to the Actor.
 	GatewayBatchEnd          Intent // ActorBatchEnd is used to end a batch of messages from the client to the Actor.
@@ -75,9 +76,11 @@ func newIntentTypes() *intentTypes {
 		LinkEvent:                Intent{Name: "LinkEvent", NeuralMemoryCommand: "link", MessageType: 1000, RoutingMessageType: "MEM_REQ"},
 		UnlinkEvent:              Intent{Name: "UnlinkEvent", NeuralMemoryCommand: "unlink", MessageType: 1000, RoutingMessageType: "MEM_REQ"},
 		StoreBatchLinks:          Intent{Name: "StoreBatchLinks", NeuralMemoryCommand: "link_batch", MessageType: 1000, RoutingMessageType: "MEM_REQ"},
+		UpdateBatchTags:          Intent{Name: "UpdateBatchTags", NeuralMemoryCommand: "update_tag_batch", MessageType: 1000, RoutingMessageType: "MEM_REQ"},
 		StoreEventResponse:       Intent{Name: "StoreEventResponse", NeuralMemoryCommand: "store", MessageType: 1001, RoutingMessageType: "MEM_REPLY"},
 		StoreBatchEventsResponse: Intent{Name: "StoreBatchEventsResponse", NeuralMemoryCommand: "store_batch", MessageType: 1001, RoutingMessageType: "MEM_REPLY"},
 		StoreBatchTagsResponse:   Intent{Name: "StoreBatchTagsResponse", NeuralMemoryCommand: "tag_store_batch", MessageType: 1001, RoutingMessageType: "MEM_REPLY"},
+		UpdateBatchTagsResponse:  Intent{Name: "UpdateBatchTagsResponse", NeuralMemoryCommand: "update_tag_batch", MessageType: 1001, RoutingMessageType: "MEM_REPLY"},
 		GetEventResponse:         Intent{Name: "GetEventResponse", NeuralMemoryCommand: "get", MessageType: 1001, RoutingMessageType: "MEM_REPLY"},
 		GetEventsForTagsResponse: Intent{Name: "GetEventsForTagsResponse", NeuralMemoryCommand: "events_for_tags", MessageType: 1001, RoutingMessageType: "MEM_REPLY"},
 		LinkEventResponse:        Intent{Name: "LinkEventResponse", NeuralMemoryCommand: "link", MessageType: 1001, RoutingMessageType: "MEM_REPLY"},
@@ -96,6 +99,7 @@ func newIntentTypes() *intentTypes {
 		GatewayNoSend:            Intent{Name: "GatewayNoSend", MessageType: 8, RoutingMessageType: "NO_SEND"},
 		GatewayStreamOff:         Intent{Name: "GatewayStreamOff", MessageType: 9, RoutingMessageType: "STREAM_OFF"},
 		GatewayStreamOn:          Intent{Name: "GatewayStreamOn", MessageType: 10, RoutingMessageType: "STREAM_ON"},
+		GatewayStatus:            Intent{Name: "GatewayStatus", MessageType: 3, RoutingMessageType: "STATUS"},
 		ActorRecord:              Intent{Name: "ActorRecord", MessageType: 11, RoutingMessageType: "RECORD"},
 		GatewayBatchStart:        Intent{Name: "GatewayBatchStart", MessageType: 12, RoutingMessageType: "BATCH_START"},
 		GatewayBatchEnd:          Intent{Name: "GatewayBatchEnd", MessageType: 13, RoutingMessageType: "BATCH_END"},
@@ -120,28 +124,30 @@ func newIntentTypes() *intentTypes {
 // commandToIntent maps NeuralMemoryCommand strings to their corresponding Request Intent.
 // Used when decoding MEM_REQ (1000) messages to determine the intent from the _command header field.
 var commandToIntent = map[string]Intent{
-	"store":           IntentType.StoreEvent,
-	"store_batch":     IntentType.StoreBatchEvents,
-	"tag_store_batch": IntentType.StoreBatchTags,
-	"get":             IntentType.GetEvent,
-	"events_for_tag":  IntentType.GetEventsForTags,
-	"link":            IntentType.LinkEvent,
-	"unlink":          IntentType.UnlinkEvent,
-	"link_batch":      IntentType.StoreBatchLinks,
+	"store":            IntentType.StoreEvent,
+	"store_batch":      IntentType.StoreBatchEvents,
+	"tag_store_batch":  IntentType.StoreBatchTags,
+	"update_tag_batch": IntentType.UpdateBatchTags,
+	"get":              IntentType.GetEvent,
+	"events_for_tag":   IntentType.GetEventsForTags,
+	"link":             IntentType.LinkEvent,
+	"unlink":           IntentType.UnlinkEvent,
+	"link_batch":       IntentType.StoreBatchLinks,
 }
 
 // commandToResponseIntent maps NeuralMemoryCommand strings to their corresponding Response Intent.
 // Used when decoding MEM_REPLY (1001) messages to determine the intent from the _type/_command header field.
 var commandToResponseIntent = map[string]Intent{
-	"store":           IntentType.StoreEventResponse,
-	"store_batch":     IntentType.StoreBatchEventsResponse,
-	"tag_store_batch": IntentType.StoreBatchTagsResponse,
-	"get":             IntentType.GetEventResponse,
-	"events_for_tag":  IntentType.GetEventsForTagsResponse,
-	"events_for_tags": IntentType.GetEventsForTagsResponse, // Handle both variants
-	"link":            IntentType.LinkEventResponse,
-	"unlink":          IntentType.UnlinkEventResponse,
-	"link_batch":      IntentType.StoreBatchLinksResponse,
+	"store":            IntentType.StoreEventResponse,
+	"store_batch":      IntentType.StoreBatchEventsResponse,
+	"tag_store_batch":  IntentType.StoreBatchTagsResponse,
+	"update_tag_batch": IntentType.UpdateBatchTagsResponse,
+	"get":              IntentType.GetEventResponse,
+	"events_for_tag":   IntentType.GetEventsForTagsResponse,
+	"events_for_tags":  IntentType.GetEventsForTagsResponse, // Handle both variants
+	"link":             IntentType.LinkEventResponse,
+	"unlink":           IntentType.UnlinkEventResponse,
+	"link_batch":       IntentType.StoreBatchLinksResponse,
 }
 
 // IntentFromCommand returns the Intent corresponding to the given command string.
@@ -218,7 +224,7 @@ func intentFromMessageTypeInt(messageType int) (Intent, bool) {
 		IntentType.LinkEventResponse, IntentType.UnlinkEventResponse, IntentType.StoreBatchLinksResponse,
 		// Gateway/Actor intents
 		IntentType.ActorEcho, IntentType.ActorHalt, IntentType.ActorStart,
-		IntentType.Status, IntentType.StatusRequest, IntentType.ActorRequest, IntentType.GatewayId,
+		IntentType.GatewayStatus, IntentType.Status, IntentType.StatusRequest, IntentType.ActorRequest, IntentType.GatewayId,
 		IntentType.GatewayDisconnect, IntentType.GatewaySendNext, IntentType.GatewayNoSend,
 		IntentType.GatewayStreamOff, IntentType.GatewayStreamOn, IntentType.ActorRecord,
 		IntentType.GatewayBatchStart, IntentType.GatewayBatchEnd,

@@ -152,57 +152,6 @@ func TestStoreBatchTagsMessageHeader(t *testing.T) {
 	}
 }
 
-func TestUpdateBatchTagsMessageHeader(t *testing.T) {
-	tests := []struct {
-		name         string
-		msg          *Message
-		wantContains []string
-	}{
-		{
-			name: "with Id and Owner",
-			msg: &Message{
-				Envelope: Envelope{MessageId: "update-msg-123"},
-				Event: &EventFields{
-					Id:    "event-id-789",
-					Owner: "owner1",
-				},
-			},
-			wantContains: []string{
-				"_db_cmd=update_tag_batch",
-				"event_id=event-id-789",
-				"owner=owner1",
-				"_msg_id=update-msg-123",
-			},
-		},
-		{
-			name: "with UniqueId and OwnerUniqueID",
-			msg: &Message{
-				Envelope: Envelope{MessageId: "update-msg-456"},
-				Event: &EventFields{
-					UniqueId:      "unique-def",
-					OwnerUniqueID: "owner-unique-ghi",
-				},
-			},
-			wantContains: []string{
-				"_db_cmd=update_tag_batch",
-				"unique_id=unique-def",
-				"owner_unique_id=owner-unique-ghi",
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			header := UpdateBatchTagsMessageHeader(tt.msg)
-
-			for _, want := range tt.wantContains {
-				if !strings.Contains(header, want) {
-					t.Errorf("UpdateBatchTagsMessageHeader() missing %q in header: %s", want, header)
-				}
-			}
-		})
-	}
-}
 
 func TestGetEventMessageHeader(t *testing.T) {
 	tests := []struct {
@@ -695,8 +644,8 @@ func TestDecodeMessage_StoreBatchEventsResponse(t *testing.T) {
 		t.Errorf("Intent.Name = %q, want StoreBatchEventsResponse", decoded.Intent.Name)
 	}
 
-	if len(decoded.Response.StoreBatchEventRecords) != 2 {
-		t.Errorf("StoreBatchEventRecords count = %d, want 2", len(decoded.Response.StoreBatchEventRecords))
+	if len(decoded.Response.StoreBatchEventRecord.EventResults) != 2 {
+		t.Errorf("StoreBatchEventRecord.EventResults count = %d, want 2", len(decoded.Response.StoreBatchEventRecord.EventResults))
 	}
 }
 
@@ -878,17 +827,17 @@ func TestDecodeMessage_StoreBatchLinksResponse(t *testing.T) {
 		t.Errorf("Response.StorageSuccessCount = %d, want 2", decoded.Response.StorageSuccessCount)
 	}
 
-	if len(decoded.Response.StoreLinkBatchEventRecords) != 2 {
-		t.Errorf("StoreLinkBatchEventRecords count = %d, want 2", len(decoded.Response.StoreLinkBatchEventRecords))
+	if len(decoded.Response.StoreLinkBatchEventRecord.LinkResults) != 2 {
+		t.Errorf("StoreLinkBatchEventRecord.LinkResults count = %d, want 2", len(decoded.Response.StoreLinkBatchEventRecord.LinkResults))
 	}
 
 	// Verify first link record
-	if decoded.Response.StoreLinkBatchEventRecords[0].EventA != "eventA1" {
-		t.Errorf("First link EventA = %q, want eventA1", decoded.Response.StoreLinkBatchEventRecords[0].EventA)
+	if decoded.Response.StoreLinkBatchEventRecord.LinkResults[0].EventA != "eventA1" {
+		t.Errorf("First link EventA = %q, want eventA1", decoded.Response.StoreLinkBatchEventRecord.LinkResults[0].EventA)
 	}
 
-	if decoded.Response.StoreLinkBatchEventRecords[0].Category != "related" {
-		t.Errorf("First link Category = %q, want related", decoded.Response.StoreLinkBatchEventRecords[0].Category)
+	if decoded.Response.StoreLinkBatchEventRecord.LinkResults[0].Category != "related" {
+		t.Errorf("First link Category = %q, want related", decoded.Response.StoreLinkBatchEventRecord.LinkResults[0].Category)
 	}
 }
 
@@ -1051,11 +1000,6 @@ func TestConstructHeader_AllIntents(t *testing.T) {
 			intent:     IntentType.StoreBatchTags,
 			setupMsg:   func() *Message { return &Message{Event: &EventFields{Id: "e1", Owner: "o1"}} },
 			wantPrefix: "_db_cmd=tag_store_batch",
-		},
-		{
-			intent:     IntentType.UpdateBatchTags,
-			setupMsg:   func() *Message { return &Message{Event: &EventFields{Id: "e1", Owner: "o1"}} },
-			wantPrefix: "_db_cmd=update_tag_batch",
 		},
 		{
 			intent:     IntentType.GetEvent,

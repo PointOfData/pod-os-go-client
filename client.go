@@ -29,6 +29,12 @@ var (
 // to the gateway was lost. Callers can check for this error and retry their request.
 var ErrConnectionLost = errors.New("connection to gateway was lost during request")
 
+// responseWithRaw holds a decoded message and the raw wire bytes for callers that need both.
+type responseWithRaw struct {
+	Msg *message.Message
+	Raw []byte
+}
+
 // getClientKey creates a unique key from ClientName and GatewayActorName
 func getClientKey(clientName, gatewayActorName string) string {
 	return clientName + ":" + gatewayActorName
@@ -121,8 +127,9 @@ type Client struct {
 	receiverCancel context.CancelFunc               // Cancel function for receiver
 	receiverWg     sync.WaitGroup                   // Wait group for receiver goroutine
 	receiverActive bool                             // Whether background receiver is running
-	pendingMu      sync.RWMutex                     // Protects pending map
+	pendingMu      sync.RWMutex                     // Protects pending maps
 	pending        map[string]chan *message.Message // messageId -> response channel
+	pendingWithRaw map[string]chan *responseWithRaw // messageId -> response+raw channel
 
 	// Reconnection state
 	reconnecting     bool       // Whether a reconnection is in progress
@@ -356,6 +363,7 @@ func NewClient(ctx context.Context, cfg config.Config) (*Client, error) {
 		receiverCtx:      receiverCtx,
 		receiverCancel:   receiverCancel,
 		pending:          make(map[string]chan *message.Message),
+		pendingWithRaw:   make(map[string]chan *responseWithRaw),
 		logger:           logger,
 	}
 
@@ -440,6 +448,28 @@ func (c *Client) SendMessage(ctx context.Context, msg *message.Message) (*messag
 	return c.sendMessageSync(ctx, msg)
 }
 
+// SendMessageWithRaw sends a message and returns both the decoded response and the raw wire bytes.
+// Use this when the caller needs to display or log the undecoded server response (e.g. for a "Raw" tab).
+func (c *Client) SendMessageWithRaw(ctx context.Context, msg *message.Message) (*message.Message, []byte, error) {
+	if msg.ClientName != c.clientName {
+		msg.ClientName = c.clientName
+	}
+	if msg.From != "" && strings.Contains(msg.From, "@") {
+		parts := strings.Split(msg.From, "@")
+		expectedFrom := c.clientName + "@" + parts[1]
+		if msg.From != expectedFrom {
+			msg.From = expectedFrom
+		}
+	}
+	if msg.MessageId == "" {
+		msg.MessageId = uuid.New().String()
+	}
+	if c.receiverActive {
+		return c.sendMessageWithCorrelationRaw(ctx, msg)
+	}
+	return c.sendMessageSyncRaw(ctx, msg)
+}
+
 // SendControlMessage sends a control message (no response expected)
 func (c *Client) SendControlMessage(ctx context.Context, msg *message.SocketMessage) error {
 	// Check connection before sending
@@ -519,6 +549,10 @@ func (c *Client) StopReceiver() {
 	for msgId, ch := range c.pending {
 		close(ch)
 		delete(c.pending, msgId)
+	}
+	for msgId, ch := range c.pendingWithRaw {
+		close(ch)
+		delete(c.pendingWithRaw, msgId)
 	}
 	c.pendingMu.Unlock()
 
@@ -619,10 +653,22 @@ func (c *Client) receiveLoop() {
 		}
 
 		c.pendingMu.RLock()
+		rawChan, rawExists := c.pendingWithRaw[messageId]
 		responseChan, exists := c.pending[messageId]
 		c.pendingMu.RUnlock()
 
-		if exists {
+		if rawExists {
+			select {
+			case rawChan <- &responseWithRaw{Msg: response, Raw: responseBytes}:
+				if c.logger.Enabled(log.LevelDebug) {
+					c.logger.Debug("routed response+raw to caller", "message_id", messageId)
+				}
+			default:
+				if c.logger.Enabled(log.LevelDebug) {
+					c.logger.Debug("caller already gone", "message_id", messageId, "msg", "timed out")
+				}
+			}
+		} else if exists {
 			// Non-blocking send to avoid deadlock if caller already timed out
 			select {
 			case responseChan <- response:
@@ -649,11 +695,17 @@ func (c *Client) notifyPendingCallersConnectionLost() {
 	defer c.pendingMu.Unlock()
 
 	for msgId, ch := range c.pending {
-		// Close the channel to signal connection loss
 		close(ch)
 		delete(c.pending, msgId)
 		if c.logger.Enabled(log.LevelDebug) {
 			c.logger.Debug("notified pending caller of connection loss", "message_id", msgId)
+		}
+	}
+	for msgId, ch := range c.pendingWithRaw {
+		close(ch)
+		delete(c.pendingWithRaw, msgId)
+		if c.logger.Enabled(log.LevelDebug) {
+			c.logger.Debug("notified pending raw caller of connection loss", "message_id", msgId)
 		}
 	}
 }
@@ -991,6 +1043,101 @@ func (c *Client) sendMessageSync(ctx context.Context, msg *message.Message) (*me
 	}
 
 	return responseMsg, nil
+}
+
+// sendMessageSyncRaw is like sendMessageSync but also returns the raw response bytes.
+func (c *Client) sendMessageSyncRaw(ctx context.Context, msg *message.Message) (*message.Message, []byte, error) {
+	conversationUUID := uuid.New().String()
+	socketMsg, err := message.EncodeMessage(msg, conversationUUID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to encode message: %w", err)
+	}
+	if !c.conn.IsConnected() {
+		return nil, nil, fmt.Errorf("connection closed before sending message")
+	}
+	c.sendMu.Lock()
+	sent, sendErr := c.conn.Send(socketMsg.MessageBytes)
+	c.sendMu.Unlock()
+	if sendErr != nil {
+		return nil, nil, fmt.Errorf("failed to send message: %w", convertGatewayError(sendErr))
+	}
+	if sent == 0 {
+		return nil, nil, fmt.Errorf("failed to send message: no bytes sent")
+	}
+	c.logger.Info("sent message", "bytes", sent, "actor", c.gatewayActorName)
+	if !c.conn.IsConnected() {
+		return nil, nil, fmt.Errorf("connection closed before receiving response")
+	}
+	_, responseBytes, receiveErr := c.conn.Receive(ctx)
+	if receiveErr != nil {
+		return nil, nil, fmt.Errorf("failed to receive response: %w", convertGatewayError(receiveErr))
+	}
+	responseMsg, err := message.DecodeMessage(responseBytes)
+	if err != nil {
+		return responseMsg, responseBytes, fmt.Errorf("failed to decode response: %w", err)
+	}
+	if responseMsg.ProcessingStatus() == "ERROR" {
+		if responseMsg.ProcessingMessage() == "" {
+			return responseMsg, responseBytes, errors.New("unknown error from Pod-OS actor")
+		}
+		return responseMsg, responseBytes, errors.New(responseMsg.ProcessingMessage())
+	}
+	return responseMsg, responseBytes, nil
+}
+
+// sendMessageWithCorrelationRaw is like sendMessageWithCorrelation but returns raw response bytes via pendingWithRaw.
+func (c *Client) sendMessageWithCorrelationRaw(ctx context.Context, msg *message.Message) (*message.Message, []byte, error) {
+	messageId := msg.MessageId
+	if messageId == "" {
+		messageId = uuid.New().String()
+		msg.MessageId = messageId
+	}
+	rawChan := make(chan *responseWithRaw, 1)
+	c.pendingMu.Lock()
+	c.pendingWithRaw[messageId] = rawChan
+	c.pendingMu.Unlock()
+	defer func() {
+		c.pendingMu.Lock()
+		delete(c.pendingWithRaw, messageId)
+		c.pendingMu.Unlock()
+	}()
+	conversationUUID := uuid.New().String()
+	socketMsg, err := message.EncodeMessage(msg, conversationUUID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to encode message: %w", err)
+	}
+	if !c.conn.IsConnected() {
+		return nil, nil, fmt.Errorf("connection closed before sending message")
+	}
+	c.sendMu.Lock()
+	sent, sendErr := c.conn.Send(socketMsg.MessageBytes)
+	c.sendMu.Unlock()
+	if sendErr != nil {
+		return nil, nil, fmt.Errorf("failed to send message: %w", convertGatewayError(sendErr))
+	}
+	if sent == 0 {
+		return nil, nil, fmt.Errorf("failed to send message: no bytes sent")
+	}
+	c.logger.Info("sent message", "bytes", sent, "actor", c.gatewayActorName, "message_id", messageId)
+	select {
+	case rawResp, ok := <-rawChan:
+		if !ok {
+			return nil, nil, ErrConnectionLost
+		}
+		if rawResp == nil || rawResp.Msg == nil {
+			return nil, nil, fmt.Errorf("received nil response from %s", c.gatewayActorName)
+		}
+		if rawResp.Msg.ProcessingStatus() == "ERROR" {
+			errMsg := rawResp.Msg.ProcessingMessage()
+			if errMsg == "" {
+				errMsg = "unknown error from Pod-OS actor"
+			}
+			return rawResp.Msg, rawResp.Raw, errors.New(errMsg)
+		}
+		return rawResp.Msg, rawResp.Raw, nil
+	case <-ctx.Done():
+		return nil, nil, fmt.Errorf("request to %s timed out waiting for response [MessageId: %s]: %w", c.gatewayActorName, messageId, ctx.Err())
+	}
 }
 
 // isTimeoutError checks if an error string indicates a timeout

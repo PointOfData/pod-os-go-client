@@ -60,6 +60,20 @@ func decodeHeader(s string) (h map[string]string, err error) {
 	return header, nil
 }
 
+// payloadContainsLinkRecords reports whether a payload (string or []byte) begins with
+// a GetEvent link record marker ("_link="). This is used to detect responses where
+// get_links=Y took precedence over send_data, but the MIME type was left as
+// application/octet-stream by the server.
+func payloadContainsLinkRecords(data interface{}) bool {
+	switch v := data.(type) {
+	case string:
+		return strings.HasPrefix(v, "_link=")
+	case []byte:
+		return len(v) >= 6 && string(v[:6]) == "_link="
+	}
+	return false
+}
+
 // parseEventTagHeaders parses event_tag headers from GetEvent response
 // Format: event_tag:<freq>:<timestamp>=tag_value
 // Returns a slice of TagOutput parsed from the headers
@@ -222,6 +236,13 @@ func decodeEventFields(eventMap map[string]string, event *EventFields) (eventFie
 		event.Timestamp = timestamp
 	} else if timestamp, exists := eventMap["_timestamp"]; exists {
 		event.Timestamp = timestamp
+	}
+
+	// Decode _hits (search term match count per event, present in GetEventsForTags response)
+	if hits, exists := eventMap["_hits"]; exists {
+		if h, err := strconv.Atoi(hits); err == nil {
+			event.Hits = h
+		}
 	}
 
 	// Loop over coordinate n fields and concatenate the values into the Location string.
@@ -670,7 +691,16 @@ func DecodeMessage(message []byte) (*Message, error) {
 
 	// Set Envelope fields
 	msg.To = string(message[toStart:toEnd])
-	msg.From = string(message[fromStart:fromEnd])
+	
+	// Handle From field with potential routing data
+	// Pod-OS may return routing info like: address|gateway,client,timestamp
+	// We only want the address part (position 0 when split on '|')
+	fromStr := string(message[fromStart:fromEnd])
+	if pipeIndex := strings.IndexByte(fromStr, '|'); pipeIndex != -1 {
+		msg.From = fromStr[:pipeIndex]
+	} else {
+		msg.From = fromStr
+	}
 
 	// Decode the header map from the header bytes.
 	headerMap, err := decodeHeader(string(message[headerStart:headerEnd]))
@@ -716,9 +746,9 @@ func DecodeMessage(message []byte) (*Message, error) {
 	// Determine the Intent from messageType and _type/_command header field.
 	// For MEM_REQ (1000) or MEM_REPLY (1001), use the command from header to get the specific intent.
 	command := ""
-	if cmd, exists := headerMap["_command"]; exists {
+	if cmd, exists := headerMap["_type"]; exists {
 		command = cmd
-	} else if cmd, exists := headerMap["_type"]; exists {
+	} else if cmd, exists := headerMap["_command"]; exists {
 		command = cmd
 	} else if cmd, exists := headerMap["_db_cmd"]; exists {
 		command = cmd
@@ -791,18 +821,24 @@ func DecodeMessage(message []byte) (*Message, error) {
 		// Handle both Request and Response intent names for payload parsing
 		switch msg.Intent.Name {
 		case "GetEvent", "GetEventResponse":
-			// For GetEventResponse, parse Tags and Links from payload if not BLOB data
-			// BLOB data is when SendData=true was in the request - the MimeType would be set
-			// and we leave the payload as-is
-			if msg.Payload.MimeType != "application/octet-stream" {
+			// For GetEventResponse, parse Tags and Links from payload if not BLOB data.
+			// BLOB data is when SendData=true was in the request and get_links=N.
+			// When get_links=Y takes precedence over send_data, Pod-OS returns link records
+			// as text even if the MIME type header still says application/octet-stream, so we
+			// also parse when the payload content starts with link record markers.
+			if msg.Payload.MimeType != "application/octet-stream" || payloadContainsLinkRecords(msg.Payload.Data) {
 
 				// Parse structured data (Tags and Links)
 				tags, links, ok := parseGetEventResponse(&msg, &headerMap)
 				if ok {
 					if msg.Event != nil {
+						msg.Event.Tags = tags
+						msg.Event.Links = links
 						msg.Response.EventRecords = append(msg.Response.EventRecords, *msg.Event)
-						msg.Response.EventRecords[0].Tags = tags
-						msg.Response.EventRecords[0].Links = links
+						if len(msg.Response.EventRecords) > 0 {
+							msg.Response.EventRecords[0].Tags = tags
+							msg.Response.EventRecords[0].Links = links
+						}
 					}
 				}
 			}
@@ -811,10 +847,14 @@ func DecodeMessage(message []byte) (*Message, error) {
 			msg.Response.EventRecords, _ = parseGetEventsForTagsPayload(&msg)
 
 		case "StoreBatchEvents", "StoreBatchEventsResponse":
-			msg.Response.StoreBatchEventRecords, _ = parseStoreBatchEventsPayload(&msg)
+			if batchRecord, ok := parseStoreBatchEventsPayload(&msg); ok && batchRecord != nil {
+				msg.Response.StoreBatchEventRecord = *batchRecord
+			}
 
 		case "StoreBatchLinks", "StoreBatchLinksResponse":
-			msg.Response.StoreLinkBatchEventRecords, _ = parseLinkEventBatchPayload(&msg)
+			if linkRecord, ok := parseLinkEventBatchPayload(&msg); ok && linkRecord != nil {
+				msg.Response.StoreLinkBatchEventRecord = *linkRecord
+			}
 
 		case "StoreBatchTags", "StoreBatchTagsResponse":
 			// StoreBatchTagsResponse: Payload is unused per spec
@@ -841,5 +881,24 @@ func DecodeMessage(message []byte) (*Message, error) {
 			// Payload data is already set above based on MimeType
 		}
 	}
+
+	// For GetEvent responses: tags are returned in the response HEADER as event_tag: fields,
+	// NOT in the payload. When payloadDataLength==0 the switch block above is bypassed entirely,
+	// so we must call parseGetEventResponse here to extract header-based tags even with no payload.
+	if payloadDataLength == 0 && (msg.Intent.Name == "GetEvent" || msg.Intent.Name == "GetEventResponse") {
+		if msg.Payload.MimeType != "application/octet-stream" || payloadContainsLinkRecords(msg.Payload.Data) {
+			tags, links, ok := parseGetEventResponse(&msg, &headerMap)
+			if ok && msg.Event != nil {
+				msg.Event.Tags = tags
+				msg.Event.Links = links
+				msg.Response.EventRecords = append(msg.Response.EventRecords, *msg.Event)
+				if len(msg.Response.EventRecords) > 0 {
+					msg.Response.EventRecords[0].Tags = tags
+					msg.Response.EventRecords[0].Links = links
+				}
+			}
+		}
+	}
+
 	return &msg, nil
 }
