@@ -188,6 +188,7 @@ func NewClient(ctx context.Context, cfg config.Config) (*Client, error) {
 		TracerName:     cfg.TracerName,
 		Tracer:         cfg.Tracer,
 		Logger:         logger,
+		WireHook:       cfg.WireHook,
 		DialTimeout:    cfg.DialTimeout,
 		SendTimeout:    cfg.SendTimeout,
 		ReceiveTimeout: cfg.ReceiveTimeout,
@@ -236,6 +237,18 @@ func NewClient(ctx context.Context, cfg config.Config) (*Client, error) {
 	if !conn.IsConnected() {
 		conn.Close()
 		return nil, fmt.Errorf("connection closed before sending ID message")
+	}
+
+	if logger.Enabled(log.LevelDebug) {
+		logger.Debug("wire: sending GatewayId frame",
+			"intent",       idMsg.Envelope.Intent.Name,
+			"message_type", idMsg.Envelope.Intent.MessageType,
+			"to",           idMsg.Envelope.To,
+			"from",         idMsg.Envelope.From,
+			"msg_id",       idMsg.Envelope.MessageId,
+			"header",       socketMsg.Header,
+			"total_bytes",  len(socketMsg.MessageBytes),
+		)
 	}
 
 	sent, sendErr := conn.Send(socketMsg.MessageBytes)
@@ -314,6 +327,18 @@ func NewClient(ctx context.Context, cfg config.Config) (*Client, error) {
 		if !conn.IsConnected() {
 			conn.Close()
 			return nil, fmt.Errorf("connection closed before sending STREAM ON message")
+		}
+
+		if logger.Enabled(log.LevelDebug) {
+			logger.Debug("wire: sending GatewayStreamOn frame",
+				"intent",       streamOnMsg.Envelope.Intent.Name,
+				"message_type", streamOnMsg.Envelope.Intent.MessageType,
+				"to",           streamOnMsg.Envelope.To,
+				"from",         streamOnMsg.Envelope.From,
+				"msg_id",       streamOnMsg.Envelope.MessageId,
+				"header",       streamOnSocketMsg.Header,
+				"total_bytes",  len(streamOnSocketMsg.MessageBytes),
+			)
 		}
 
 		streamOnSent, sendErr := conn.Send(streamOnSocketMsg.MessageBytes)
@@ -832,6 +857,18 @@ func (c *Client) reAuthenticate() error {
 		return fmt.Errorf("failed to encode ID message: %w", err)
 	}
 
+	if c.logger.Enabled(log.LevelDebug) {
+		c.logger.Debug("wire: sending GatewayId frame (re-auth)",
+			"intent",       idMsg.Envelope.Intent.Name,
+			"message_type", idMsg.Envelope.Intent.MessageType,
+			"to",           idMsg.Envelope.To,
+			"from",         idMsg.Envelope.From,
+			"msg_id",       idMsg.Envelope.MessageId,
+			"header",       socketMsg.Header,
+			"total_bytes",  len(socketMsg.MessageBytes),
+		)
+	}
+
 	sent, sendErr := c.conn.Send(socketMsg.MessageBytes)
 	if sendErr != nil {
 		return fmt.Errorf("failed to send ID message: %w", convertGatewayError(sendErr))
@@ -892,6 +929,18 @@ func (c *Client) reAuthenticate() error {
 		streamOnSocketMsg, err := message.EncodeMessage(streamOnMsg, uuid.New().String())
 		if err != nil {
 			return fmt.Errorf("failed to encode STREAM ON message: %w", err)
+		}
+
+		if c.logger.Enabled(log.LevelDebug) {
+			c.logger.Debug("wire: sending GatewayStreamOn frame (re-auth)",
+				"intent",       streamOnMsg.Envelope.Intent.Name,
+				"message_type", streamOnMsg.Envelope.Intent.MessageType,
+				"to",           streamOnMsg.Envelope.To,
+				"from",         streamOnMsg.Envelope.From,
+				"msg_id",       streamOnMsg.Envelope.MessageId,
+				"header",       streamOnSocketMsg.Header,
+				"total_bytes",  len(streamOnSocketMsg.MessageBytes),
+			)
 		}
 
 		streamOnSent, sendErr := c.conn.Send(streamOnSocketMsg.MessageBytes)

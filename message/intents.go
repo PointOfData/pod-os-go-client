@@ -16,17 +16,15 @@ var IntentType = newIntentTypes()
 type intentTypes struct {
 	StoreEvent               Intent // StoreEvent is used to store a single event object in a Neural Memory database.
 	StoreBatchEvents         Intent // StoreBatchEvents is used to store a batch of event objects (including tags) in a Neural Memory database.
-	StoreBatchTags           Intent // StoreBatchTags is used to store a batch of tag objects (associated with an event object) in a Neural Memory database.
+	StoreBatchTags           Intent // StoreBatchTags is used to store a batch of tag objects (associated with an event object) in a Neural Memory database. Also covers the update use case (previously UpdateBatchTags).
 	GetEvent                 Intent // GetEvent is used to retrieve a single event object from a Neural Memory database. Use GetTags=true to retrieve tags for the event.
 	GetEventsForTags         Intent // GetEventsForTags is used to retrieve a batch of event objects from a Neural Memory database by searching for Tags.
 	LinkEvent                Intent // LinkEvent is used to link two event objects in a Neural Memory database. It is also an Event Object itself.
 	UnlinkEvent              Intent // UnlinkEvent is used to unlink two event objects in a Neural Memory database.
 	StoreBatchLinks          Intent // StoreBatchLinks is used to store a batch of link objects in a Neural Memory database.
-	UpdateBatchTags          Intent // UpdateBatchTags is used to update a batch of tag objects (associated with an event object) in a Neural Memory database.
 	StoreEventResponse       Intent // StoreEventResponse is used to store a single event object in a Neural Memory database.
 	StoreBatchEventsResponse Intent // StoreBatchEventsResponse is used to store a batch of event objects (including tags) in a Neural Memory database.
-	StoreBatchTagsResponse   Intent // StoreBatchTagsResponse is used to store a batch of tag objects (associated with an event object) in a Neural Memory database.
-	UpdateBatchTagsResponse  Intent // UpdateBatchTagsResponse is used to update a batch of tag objects (associated with an event object) in a Neural Memory database.
+	StoreBatchTagsResponse   Intent // StoreBatchTagsResponse is used to store/update a batch of tag objects (associated with an event object) in a Neural Memory database.
 	GetEventResponse         Intent // GetEventResponse is used to retrieve a single event object from a Neural Memory database. Use GetTags=true to retrieve tags for the event.
 	GetEventsForTagsResponse Intent // GetEventsForTagsResponse is used to retrieve a batch of event objects from a Neural Memory database by searching for Tags.
 	LinkEventResponse        Intent // LinkEventResponse is used to link two event objects in a Neural Memory database. It is also an Event Object itself.
@@ -76,11 +74,9 @@ func newIntentTypes() *intentTypes {
 		LinkEvent:                Intent{Name: "LinkEvent", NeuralMemoryCommand: "link", MessageType: 1000, RoutingMessageType: "MEM_REQ"},
 		UnlinkEvent:              Intent{Name: "UnlinkEvent", NeuralMemoryCommand: "unlink", MessageType: 1000, RoutingMessageType: "MEM_REQ"},
 		StoreBatchLinks:          Intent{Name: "StoreBatchLinks", NeuralMemoryCommand: "link_batch", MessageType: 1000, RoutingMessageType: "MEM_REQ"},
-		UpdateBatchTags:          Intent{Name: "UpdateBatchTags", NeuralMemoryCommand: "update_tag_batch", MessageType: 1000, RoutingMessageType: "MEM_REQ"},
 		StoreEventResponse:       Intent{Name: "StoreEventResponse", NeuralMemoryCommand: "store", MessageType: 1001, RoutingMessageType: "MEM_REPLY"},
 		StoreBatchEventsResponse: Intent{Name: "StoreBatchEventsResponse", NeuralMemoryCommand: "store_batch", MessageType: 1001, RoutingMessageType: "MEM_REPLY"},
 		StoreBatchTagsResponse:   Intent{Name: "StoreBatchTagsResponse", NeuralMemoryCommand: "tag_store_batch", MessageType: 1001, RoutingMessageType: "MEM_REPLY"},
-		UpdateBatchTagsResponse:  Intent{Name: "UpdateBatchTagsResponse", NeuralMemoryCommand: "update_tag_batch", MessageType: 1001, RoutingMessageType: "MEM_REPLY"},
 		GetEventResponse:         Intent{Name: "GetEventResponse", NeuralMemoryCommand: "get", MessageType: 1001, RoutingMessageType: "MEM_REPLY"},
 		GetEventsForTagsResponse: Intent{Name: "GetEventsForTagsResponse", NeuralMemoryCommand: "events_for_tags", MessageType: 1001, RoutingMessageType: "MEM_REPLY"},
 		LinkEventResponse:        Intent{Name: "LinkEventResponse", NeuralMemoryCommand: "link", MessageType: 1001, RoutingMessageType: "MEM_REPLY"},
@@ -124,27 +120,25 @@ func newIntentTypes() *intentTypes {
 // commandToIntent maps NeuralMemoryCommand strings to their corresponding Request Intent.
 // Used when decoding MEM_REQ (1000) messages to determine the intent from the _command header field.
 var commandToIntent = map[string]Intent{
-	"store":            IntentType.StoreEvent,
-	"store_batch":      IntentType.StoreBatchEvents,
-	"tag_store_batch":  IntentType.StoreBatchTags,
-	"update_tag_batch": IntentType.UpdateBatchTags,
-	"get":              IntentType.GetEvent,
-	"events_for_tag":   IntentType.GetEventsForTags,
-	"link":             IntentType.LinkEvent,
-	"unlink":           IntentType.UnlinkEvent,
-	"link_batch":       IntentType.StoreBatchLinks,
+	"store":           IntentType.StoreEvent,
+	"store_batch":     IntentType.StoreBatchEvents,
+	"tag_store_batch": IntentType.StoreBatchTags,
+	"get":             IntentType.GetEvent,
+	"events_for_tag":  IntentType.GetEventsForTags,
+	"link":            IntentType.LinkEvent,
+	"unlink":          IntentType.UnlinkEvent,
+	"link_batch":      IntentType.StoreBatchLinks,
 }
 
 // commandToResponseIntent maps NeuralMemoryCommand strings to their corresponding Response Intent.
 // Used when decoding MEM_REPLY (1001) messages to determine the intent from the _type/_command header field.
 var commandToResponseIntent = map[string]Intent{
-	"store":            IntentType.StoreEventResponse,
-	"store_batch":      IntentType.StoreBatchEventsResponse,
-	"tag_store_batch":  IntentType.StoreBatchTagsResponse,
-	"update_tag_batch": IntentType.UpdateBatchTagsResponse,
-	"get":              IntentType.GetEventResponse,
-	"events_for_tag":   IntentType.GetEventsForTagsResponse,
-	"events_for_tags":  IntentType.GetEventsForTagsResponse, // Handle both variants
+	"store":           IntentType.StoreEventResponse,
+	"store_batch":     IntentType.StoreBatchEventsResponse,
+	"tag_store_batch": IntentType.StoreBatchTagsResponse,
+	"get":             IntentType.GetEventResponse,
+	"events_for_tag":  IntentType.GetEventsForTagsResponse,
+	"events_for_tags": IntentType.GetEventsForTagsResponse, // Handle both variants
 	"link":             IntentType.LinkEventResponse,
 	"unlink":           IntentType.UnlinkEventResponse,
 	"link_batch":       IntentType.StoreBatchLinksResponse,

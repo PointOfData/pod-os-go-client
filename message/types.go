@@ -64,6 +64,10 @@ type Header interface {
 // SocketMessage represents a socket message
 type SocketMessage struct {
 	MessageBytes []byte
+	// Header is the tab-separated key=value wire header produced during encoding.
+	// It is populated by EncodeMessage and is available for diagnostic use
+	// (e.g. debug logging, wire hooks) without re-parsing MessageBytes.
+	Header string
 }
 
 // =============================================================================

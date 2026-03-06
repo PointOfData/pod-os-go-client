@@ -549,12 +549,12 @@ func LinkEventsMessageHeader(msg *Message) string {
 
 	_header.WriteString("strength_a=" + strconv.FormatFloat(msg.NeuralMemory.Link.StrengthA, 'f', -1, 64) + "\t")
 	_header.WriteString("strength_b=" + strconv.FormatFloat(msg.NeuralMemory.Link.StrengthB, 'f', -1, 64) + "\t")
-	_header.WriteString("category=" + msg.NeuralMemory.Link.Category)
-	_header.WriteString("loc_delim=" + msg.Event.LocationSeparator + "\t")
-	_header.WriteString("loc=" + msg.Event.Location + "\t")
-	_header.WriteString("type=" + msg.Event.Type + "\t")
+	_header.WriteString("category=" + msg.NeuralMemory.Link.Category + "\t")
+	_header.WriteString("loc_delim=" + msg.NeuralMemory.Link.LocationSeparator + "\t")
+	_header.WriteString("loc=" + msg.NeuralMemory.Link.Location + "\t")
+	_header.WriteString("type=" + msg.NeuralMemory.Link.Type + "\t")
 	_header.WriteString("mime=" + msg.PayloadMimeType() + "\t")
-	_header.WriteString("timestamp=" + msg.Event.Timestamp + "\t")
+	_header.WriteString("timestamp=" + msg.NeuralMemory.Link.Timestamp + "\t")
 	if msg.NeuralMemory.Link.OwnerID != "" {
 		_header.WriteString("owner_event_id=" + msg.NeuralMemory.Link.OwnerID + "\t")
 	} else if msg.NeuralMemory.Link.OwnerUniqueID != "" {
@@ -594,17 +594,23 @@ func BatchLinkEventsMessageHeader(msg *Message) string {
 func UnlinkEventsMessageHeader(msg *Message) string {
 	var _header strings.Builder
 	_header.WriteString("_db_cmd=" + "unlink" + "\t")
-	if msg.Event.Owner != "" {
-		_header.WriteString("owner=" + msg.Event.Owner + "\t")
+	if msg.NeuralMemory.Link.Owner != "" {
+		_header.WriteString("owner=" + msg.NeuralMemory.Link.Owner + "\t")
 	}
-	if msg.Event.Id != "" {
-		_header.WriteString("event_id=" + forceASCII(msg.Event.Id) + "\t")
-	} else if msg.Event.UniqueId != "" {
-		_header.WriteString("unique_id=" + msg.Event.UniqueId + "\t")
+	if msg.NeuralMemory.Link.Id != "" {
+		_header.WriteString("event_id=" + forceASCII(msg.NeuralMemory.Link.Id) + "\t")
+	} else if msg.NeuralMemory.Link.UniqueId != "" {
+		_header.WriteString("unique_id=" + msg.NeuralMemory.Link.UniqueId + "\t")
 	}
-	_header.WriteString("loc_delim=" + msg.Event.LocationSeparator + "\t")
-	_header.WriteString("loc=" + msg.Event.Location + "\t")
-	_header.WriteString("timestamp=" + msg.Event.Timestamp + "\t")
+	if msg.NeuralMemory.Link.LocationSeparator != "" {
+		_header.WriteString("loc_delim=" + msg.NeuralMemory.Link.LocationSeparator + "\t")
+	}
+	if msg.NeuralMemory.Link.Location != "" {
+		_header.WriteString("loc=" + msg.NeuralMemory.Link.Location + "\t")
+	}
+	if msg.NeuralMemory.Link.Timestamp != "" {
+		_header.WriteString("timestamp=" + msg.NeuralMemory.Link.Timestamp + "\t")
+	}
 	if msg.MessageId != "" {
 		_header.WriteString("_msg_id=" + msg.MessageId + "\t")
 	}

@@ -63,6 +63,13 @@ type Config struct {
 	// Tracer: injectable. If nil, uses NoOpTracer (zero overhead).
 	// Wire EnableTracing/TracerName when providing an OTLP-configured Tracer.
 	Tracer connection.Tracer
+
+	// WireHook: injectable wire-level observer. Called for every raw frame sent
+	// or received on the underlying TCP connection, including the GatewayId and
+	// GatewayStreamOn handshake frames that are sent inside NewClient before it
+	// returns to the caller.
+	// Nil = disabled (zero overhead).
+	WireHook connection.WireHook
 }
 
 // RetryConfig holds retry configuration

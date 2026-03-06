@@ -20,6 +20,28 @@ type Tracer interface {
 	Start(ctx context.Context, name string) (context.Context, Span)
 }
 
+// WireHook observes raw wire frames for every Send and Receive operation,
+// including the GatewayId and GatewayStreamOn handshake frames that are
+// sent inside NewClient before it returns to the caller.
+//
+// OnSend is called after data is successfully written to the wire; raw is
+// the complete frame (including the 9-byte length prefix).
+// OnReceive is called after a complete frame body is reassembled from the
+// wire; raw contains everything after the 9-byte length prefix.
+//
+// Implementations must not retain the raw slice after the call returns.
+// Nil = disabled (zero overhead). Use NoOpWireHook for a safe no-op value.
+type WireHook interface {
+	OnSend(raw []byte)
+	OnReceive(raw []byte)
+}
+
+// NoOpWireHook is a no-op WireHook that discards all observations.
+type NoOpWireHook struct{}
+
+func (NoOpWireHook) OnSend([]byte)    {}
+func (NoOpWireHook) OnReceive([]byte) {}
+
 // Span interface for tracing spans
 type Span interface {
 	End()
@@ -45,7 +67,8 @@ func (n NoOpSpan) AddEvent(name string)  {}
 type ClientConfig struct {
 	TracerName     string
 	Tracer         Tracer        // Optional tracer, defaults to NoOpTracer
-	Logger         log.Logger   // Optional logger, defaults to NoOpLogger
+	Logger         log.Logger    // Optional logger, defaults to NoOpLogger
+	WireHook       WireHook      // Optional wire observer, nil = disabled
 	DialTimeout    time.Duration // Timeout for establishing connection
 	SendTimeout    time.Duration // Timeout for send operations (SendDeadline)
 	ReceiveTimeout time.Duration // Timeout for receive operations
@@ -89,8 +112,9 @@ type Client struct {
 	Uuid      string
 	ActorName string // this functions as the ID; aka what to search for for a specific client connection.
 
-	tracer Tracer
-	logger log.Logger
+	tracer   Tracer
+	logger   log.Logger
+	wireHook WireHook
 }
 
 var _ IClient = (*Client)(nil)
@@ -136,8 +160,9 @@ func NewClient(ctx context.Context, cfg ClientConfig, network string, host strin
 		ctx:         clientCtx,
 		mu:          sync.Mutex{},
 		retry:       retry,
-		tracer:      tracer,  // Preserve tracer that was set earlier
-		logger:      logger,  // Preserve logger — must not be dropped here
+		tracer:      tracer,    // Preserve tracer that was set earlier
+		logger:      logger,    // Preserve logger — must not be dropped here
+		wireHook:    cfg.WireHook,
 		Network:     network,
 		Host:        host,
 		Port:        port,
@@ -292,6 +317,9 @@ func (c *Client) Send(data []byte) (int, *errors.GatewayDError) {
 	}
 	if c.logger.Enabled(log.LevelDebug) {
 		c.logger.Debug("sent data", "host", c.Host, "bytes", sent)
+	}
+	if c.wireHook != nil {
+		c.wireHook.OnSend(data)
 	}
 
 	span.AddEvent("sent data to server")
@@ -621,6 +649,10 @@ func (c *Client) Receive(ctx context.Context) (int, []byte, *errors.GatewayDErro
 	if remainingBytes > 0 {
 		span.RecordError(errors.ErrClientReceiveFailed)
 		return totalRead, buffer.Bytes(), errors.ErrClientReceiveFailed.Wrap(fmt.Errorf("incomplete message: expected %d bytes, got %d", int(totalMessageLength), totalRead))
+	}
+
+	if c.wireHook != nil {
+		c.wireHook.OnReceive(buffer.Bytes())
 	}
 
 	span.AddEvent("Received data from server")

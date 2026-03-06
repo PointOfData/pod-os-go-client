@@ -860,10 +860,6 @@ func DecodeMessage(message []byte) (*Message, error) {
 			// StoreBatchTagsResponse: Payload is unused per spec
 			// Header fields contain all response data (_status, _count, etc.)
 
-		case "UpdateBatchTags", "UpdateBatchTagsResponse":
-			// UpdateBatchTagsResponse: Payload is unused per spec
-			// Header fields contain all response data (_status, _count, etc.)
-
 		case "StoreEvent", "StoreEventResponse":
 			// StoreEventResponse: Payload is unused per spec
 			// Header fields contain all response data (_status, LocalId, _count, etc.)

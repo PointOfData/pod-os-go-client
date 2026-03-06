@@ -237,7 +237,7 @@ func formatFieldValue(fieldType reflect.Type, value interface{}) string {
 	return fmt.Sprintf("%v", value)
 }
 
-// FormatBatchTagsPayload formats a TagList into the payload format required for StoreBatchTags and UpdateBatchTags Intents.
+// FormatBatchTagsPayload formats a TagList into the payload format required for the StoreBatchTags Intent.
 // Each tag is formatted as a newline-terminated record: frequency=key=value
 //
 // Parameters: tags TagList - The tags to format
@@ -403,8 +403,8 @@ func EncodeMessage(msg *Message, conversationUuid string) (*SocketMessage, error
 				dataBytes = append(dataBytes, []byte(str)...) //encoding is utf-8
 			}
 		}
-	} else if msg.Intent.Name == IntentType.StoreBatchTags.Name || msg.Intent.Name == IntentType.UpdateBatchTags.Name {
-		// Handle StoreBatchTags and UpdateBatchTags Intent payload formatting
+	} else if msg.Intent.Name == IntentType.StoreBatchTags.Name {
+		// Handle StoreBatchTags Intent payload formatting
 		// Payload format: newline-terminated records of frequency=key=value
 		if payloadData != nil {
 			// Try type assertion for TagList first
@@ -503,5 +503,6 @@ func EncodeMessage(msg *Message, conversationUuid string) (*SocketMessage, error
 	// return SocketMessage
 	return &SocketMessage{
 		MessageBytes: append([]byte(_finalMessageBytes.String()), dataBytes...),
+		Header:       messageHeader,
 	}, nil
 }

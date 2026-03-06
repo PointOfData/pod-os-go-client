@@ -319,19 +319,19 @@ func TestLinkEventsMessageHeader(t *testing.T) {
 			msg: &Message{
 				Envelope: Envelope{MessageId: "link-msg-123"},
 				Event: &EventFields{
-					Owner:             "owner1",
-					Timestamp:         "+1234567890.123456",
-					Location:          "TERRA|47.6|-122.5",
-					LocationSeparator: "|",
-					Type:              "link_type",
+					Owner: "owner1",
 				},
 				NeuralMemory: &NeuralMemoryFields{
 					Link: &LinkFields{
-						EventA:    "event-a-123",
-						EventB:    "event-b-456",
-						StrengthA: 0.8,
-						StrengthB: 0.5,
-						Category:  "related",
+						EventA:            "event-a-123",
+						EventB:            "event-b-456",
+						StrengthA:         0.8,
+						StrengthB:         0.5,
+						Category:          "related",
+						Timestamp:         "+1234567890.123456",
+						Location:          "TERRA|47.6|-122.5",
+						LocationSeparator: "|",
+						Type:              "link_type",
 					},
 				},
 				Payload: &PayloadFields{MimeType: "application/json"},
@@ -351,18 +351,18 @@ func TestLinkEventsMessageHeader(t *testing.T) {
 			msg: &Message{
 				Envelope: Envelope{MessageId: "link-msg-456"},
 				Event: &EventFields{
-					Owner:             "owner1",
-					Timestamp:         "+1234567890.123456",
-					Location:          "TERRA",
-					LocationSeparator: "|",
+					Owner: "owner1",
 				},
 				NeuralMemory: &NeuralMemoryFields{
 					Link: &LinkFields{
-						UniqueIdA: "unique-a-abc",
-						UniqueIdB: "unique-b-def",
-						StrengthA: 1.0,
-						StrengthB: 1.0,
-						Category:  "parent",
+						UniqueIdA:         "unique-a-abc",
+						UniqueIdB:         "unique-b-def",
+						StrengthA:         1.0,
+						StrengthB:         1.0,
+						Category:          "parent",
+						Timestamp:         "+1234567890.123456",
+						Location:          "TERRA",
+						LocationSeparator: "|",
 					},
 				},
 				Payload: &PayloadFields{MimeType: "application/json"},
@@ -397,12 +397,14 @@ func TestUnlinkEventsMessageHeader(t *testing.T) {
 			name: "with Id",
 			msg: &Message{
 				Envelope: Envelope{MessageId: "unlink-msg-123"},
-				Event: &EventFields{
-					Id:                "event-id-123",
-					Owner:             "owner1",
-					Timestamp:         "+1234567890.123456",
-					Location:          "TERRA",
-					LocationSeparator: "|",
+				NeuralMemory: &NeuralMemoryFields{
+					Link: &LinkFields{
+						Id:                "event-id-123",
+						Owner:             "owner1",
+						Timestamp:         "+1234567890.123456",
+						Location:          "TERRA",
+						LocationSeparator: "|",
+					},
 				},
 			},
 			wantContains: []string{
@@ -415,11 +417,13 @@ func TestUnlinkEventsMessageHeader(t *testing.T) {
 			name: "with UniqueId",
 			msg: &Message{
 				Envelope: Envelope{MessageId: "unlink-msg-456"},
-				Event: &EventFields{
-					UniqueId:          "unique-abc",
-					Timestamp:         "+1234567890.123456",
-					Location:          "TERRA",
-					LocationSeparator: "|",
+				NeuralMemory: &NeuralMemoryFields{
+					Link: &LinkFields{
+						UniqueId:          "unique-abc",
+						Timestamp:         "+1234567890.123456",
+						Location:          "TERRA",
+						LocationSeparator: "|",
+					},
 				},
 			},
 			wantContains: []string{
@@ -841,32 +845,6 @@ func TestDecodeMessage_StoreBatchLinksResponse(t *testing.T) {
 	}
 }
 
-func TestDecodeMessage_UpdateBatchTagsResponse(t *testing.T) {
-	header := "_type=update_tag_batch\t_status=OK\t_count=5"
-
-	msg := buildMinimalMessage(
-		"mem@gateway.example.com",
-		"client@gateway.example.com",
-		header,
-		1001,
-		0,
-		"",
-	)
-
-	decoded, err := DecodeMessage(msg)
-	if err != nil {
-		t.Fatalf("DecodeMessage() error = %v", err)
-	}
-
-	if decoded.Intent.Name != "UpdateBatchTagsResponse" {
-		t.Errorf("Intent.Name = %q, want UpdateBatchTagsResponse", decoded.Intent.Name)
-	}
-
-	if decoded.Response.TotalEvents != 5 {
-		t.Errorf("Response.TotalEvents = %d, want 5", decoded.Response.TotalEvents)
-	}
-}
-
 // =============================================================================
 // ROUND-TRIP TESTS
 // =============================================================================
@@ -1017,9 +995,12 @@ func TestConstructHeader_AllIntents(t *testing.T) {
 			intent: IntentType.LinkEvent,
 			setupMsg: func() *Message {
 				return &Message{
-					Event:        &EventFields{Owner: "o1", Timestamp: "+123", Location: "L", LocationSeparator: "|"},
-					NeuralMemory: &NeuralMemoryFields{Link: &LinkFields{EventA: "a", EventB: "b", StrengthA: 1, StrengthB: 1, Category: "c"}},
-					Payload:      &PayloadFields{MimeType: "text/plain"},
+					Event: &EventFields{Owner: "o1"},
+					NeuralMemory: &NeuralMemoryFields{Link: &LinkFields{
+						EventA: "a", EventB: "b", StrengthA: 1, StrengthB: 1, Category: "c",
+						Timestamp: "+123", Location: "L", LocationSeparator: "|",
+					}},
+					Payload: &PayloadFields{MimeType: "text/plain"},
 				}
 			},
 			wantPrefix: "_db_cmd=link",
@@ -1027,7 +1008,7 @@ func TestConstructHeader_AllIntents(t *testing.T) {
 		{
 			intent: IntentType.UnlinkEvent,
 			setupMsg: func() *Message {
-				return &Message{Event: &EventFields{Id: "e1", Timestamp: "+123", Location: "L", LocationSeparator: "|"}}
+				return &Message{NeuralMemory: &NeuralMemoryFields{Link: &LinkFields{Id: "e1"}}}
 			},
 			wantPrefix: "_db_cmd=unlink",
 		},
