@@ -183,7 +183,7 @@ func ActorEchoHeader(msg *Message) string {
 	return _header.String()
 }
 
-// MemStoreEventMessageHeader constructs the Neural Memory Database store event message header.
+// MemStoreEventMessageHeader constructs the Evolutionary Neural Memory Database store event message header.
 //
 // Params:
 //
@@ -232,8 +232,8 @@ func StoreEventMessageHeader(msg *Message) string {
 	return _header.String()
 }
 
-// StoreDataMessageHeader constructs the Neural Memory Database store data message header.
-// StoreData stores data directly in the Neural Memory database, associated with a unique identifier,
+// StoreDataMessageHeader constructs the Evolutionary Neural Memory Database store data message header.
+// StoreData stores data directly in the Evolutionary Neural Memory database, associated with a unique identifier,
 // timestamp, and location. Unlike StoreEvent, it does not store tags.
 //
 // Params:
@@ -412,7 +412,7 @@ func GetEventMessageHeader(msg *Message) string {
 	return header.String()
 }
 
-// MemGetEventsForTagMessageHeader constructs the Machine Neural Memory (mem) events_for_tag header.
+// MemGetEventsForTagMessageHeader constructs the Machine Evolutionary Neural Memory (mem) events_for_tag header.
 // Lists all events associated with tag(s) that match a pattern.
 //
 // Params:

@@ -89,7 +89,7 @@ func TestDecodeMessage_IntentDetermination(t *testing.T) {
 			header:           "_db_cmd=get",
 			expectIntentName: "GetEvent",
 		},
-		// Non-Neural Memory message types
+		// Non-Evolutionary Neural Memory message types
 		{
 			name:             "ActorEcho message",
 			messageType:      2,

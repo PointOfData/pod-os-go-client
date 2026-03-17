@@ -1,14 +1,14 @@
-# Neural Memory Database Information Retrieval
-Pod-OS, uniquely, provides a Neural Memory Database that has the following behavorial characteristics: acquiring (encoding), stabilizing (consolidation), and retrieving information, and forming engrams (memory traces) within groups of Events. Key characteristics include its large storage capacity with decreasing marginal storage volume, native version management learning and ease, and ability to inter-link and describe any and all Event Objects using weights or activation functions, action policies, or other objective function methods. The Neural Memory DB's central thesis is that each moment in time captures, and processes important context that software, and the most advanced, complex and adaptive AIs and robotics require. Including LLMs, RAG, robotics, World Models, and other advanced AI and robotics applications.
+# Evolutionary Neural Memory Database Information Retrieval
+Pod-OS, uniquely, provides a Evolutionary Neural Memory Database that has the following behavorial characteristics: acquiring (encoding), stabilizing (consolidation), and retrieving information, and forming engrams (memory traces) within groups of Events. Key characteristics include its large storage capacity with decreasing marginal storage volume, native version management learning and ease, and ability to inter-link and describe any and all Event Objects using weights or activation functions, action policies, or other objective function methods. The Evolutionary Neural Memory DB's central thesis is that each moment in time captures, and processes important context that software, and the most advanced, complex and adaptive AIs and robotics require. Including LLMs, RAG, robotics, World Models, and other advanced AI and robotics applications.
 
-The Neural Memory Database uses three primitives: 
+The Evolutionary Neural Memory Database uses three primitives: 
 1. Event Objects:An Event Object is a uniquely identified datum (from any source) which is used as a base reference for a set of versioned attributes and context bound weighted links to other event objects. Event Objects carry crucial context information including time and location, owner, encryption, message source as actor@gateway, message destination actor@gateway, and payload MIME and binary data. 
 2. Tags: Tags are values that describe important information about the Event. There are multiple design options. The simplest design option is to use frequency=tagvalue. Frequency is an integer that describes the number of times the Tag has been applied to the Event. Tagvalue is a string or integer or float or embedding or binary data or other type that describes the value of the Tag. A powerful design option is to use Facets which are key/value pairs of any type in the format of frequency=key_name=key_value. More complex designs are possible. For example, a tag value can be a hash of the Event Object, a pointer to the Event Object, a binary data blob or a hierarchical string or integers or floats or embeddings or other type that describes the value of the Tag. What is required is that the Tag value can be searched for and retrieved using the Tag value following the guidance in the Retrieval/Search Guidance section.
 3. Link Objects: Links connect any two Events (including Link Event), but as Links are Events themselves, also carry the Event Object and Tag descriptions along with weights (integer or continuous function). 
 
-Neural Memory uses Tags to implicitly associate events by Tag name, time, and location. Neural Memory uses links to explicitly associate events. 
+Evolutionary Neural Memory uses Tags to implicitly associate events by Tag name, time, and location. Evolutionary Neural Memory uses links to explicitly associate events. 
 
-By combining Links and Tags, complex data structures and sets of related events can be created depending on the objective. For example, the Neural Memory Database can capture neural memories and semantic memories; can use Tags and Links to form short and long-term memories; and can use Links and Tags to form short and long-term relationships between events. In other data storage examples, the Neural Memory Database can be used to create a knowledge graph, a semantic network, or a graph of related events; the Neural Memory Database can also be used to mimic the behavior of a relational database such as SQL, a document database, or a graph database. In other examples, the Neural Memory Database can be used to encode in data structures a neural network (e.g., FNN, CNN, RNN, LSTM, GRU), transformers, a genetic algorithm, or a reinforcement learning model.
+By combining Links and Tags, complex data structures and sets of related events can be created depending on the objective. For example, the Evolutionary Neural Memory Database can capture neural memories and semantic memories; can use Tags and Links to form short and long-term memories; and can use Links and Tags to form short and long-term relationships between events. In other data storage examples, the Evolutionary Neural Memory Database can be used to create a knowledge graph, a semantic network, or a graph of related events; the Evolutionary Neural Memory Database can also be used to mimic the behavior of a relational database such as SQL, a document database, or a graph database. In other examples, the Evolutionary Neural Memory Database can be used to encode in data structures a neural network (e.g., FNN, CNN, RNN, LSTM, GRU), transformers, a genetic algorithm, or a reinforcement learning model.
 
 Links and tags can be defined independently of the database actually containing the original event definition, permitting the distribution of data across servers or database files. Retrieval of the actual event may require a request to other database handlers (or a router which understands that event requests need to be distributed to a given set of handlers), but there is no requirement for the actual event to be recorded within a database in which tags are placed. While this can cause data concurrency challenges, it also permits explicit segregation where it is required (such as a security application, or private analytical data associated with public information).
 
@@ -35,7 +35,7 @@ Pod-OS provides a series of predefined search capabilities for event objects. Se
 For example, consider a search which returns a single Event based on a keyword. In a typical search engine or SQL system, this would be the terminus of the search. Using Pod-OS, a set of Tags can be retrieved (or heuristics synthesized) from the Event, revealing that the Event had been previously tagged with a series of concepts (stored as Tags) based on a previous analysis by a semantic network. Using these Tags, a second set of searches is performed where all Events containing concept Tags matching those in the original event object are found; the event objects found need not even be parsed documents – they may be media files or other non-text data. This search methodology can also be called an “n-dimensional” or “tiered” search as opposed to a “search within a search”, the latter simply being an exclusionary search within a previously retrieved set.
 
 ### Buffered Results
-Queries sent to the Neural Memory DB may return more than one message. There is an option
+Queries sent to the Evolutionary Neural Memory DB may return more than one message. There is an option
 to return results either as a single message where the payload contains the list of results, or as a series
 of individual result messages.
 
@@ -100,7 +100,7 @@ boolean operation of the clause.
 | clause_name | Name of the clause | Optional. Used for branching. |
 
 #### Branch Clause Components
-A branch clause causes the Neural Memory to test a value and based on the value of the test and the boolean
+A branch clause causes the Evolutionary Neural Memory to test a value and based on the value of the test and the boolean
 operator, jump to a named clause based on whether the test is true or false.
 
 | Field Name | Description | Content |
@@ -361,9 +361,9 @@ fields, where the field format is "fieldname:value". A clause is terminated with
 may be given a name so that actions and branches may be used in the search processing.
 
 #### Rules:
-There are three types of search clauses. The first is the "search clause", which causes the Neural Memory to
+There are three types of search clauses. The first is the "search clause", which causes the Evolutionary Neural Memory to
 find events associated with tags matching a value pattern, and then to apply that set of events using a
-boolean to the existing set of found events. The second is the "branch clause", which causes the Neural Memory to
+boolean to the existing set of found events. The second is the "branch clause", which causes the Evolutionary Neural Memory to
 to jump to a named clause based on a pattern and a data source. The third and last is the "action
 clause", which alters the result set, saves data, or takes an action based on a pattern and a data source.
 Action clauses also allow for the evaluation of math expressions to generate a value to be compared

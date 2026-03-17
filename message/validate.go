@@ -1284,7 +1284,7 @@ func validateNeuralMemoryResponseHeader(h map[string]string) ValidationErrors {
 	if !hasHeader(h, "_status") {
 		errs = append(errs, errorf("warn", ctx, "Response.Status", "_status", "header_missing",
 			"NeuralMemory response (messageType 1001) is missing _status header.",
-			"This is expected for brief-hit responses. For other responses, check the Neural Memory Actor.",
+			"This is expected for brief-hit responses. For other responses, check the Evolutionary Neural Memory Actor.",
 			"", "message/decoder.go:DecodeMessage"))
 	}
 

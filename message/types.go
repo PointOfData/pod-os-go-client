@@ -124,10 +124,10 @@ type PayloadFields struct {
 }
 
 // =============================================================================
-// NEURAL MEMORY FIELDS - Neural Memory Actor operations
+// NEURAL MEMORY FIELDS - Evolutionary Neural Memory Actor operations
 // =============================================================================
 
-// NeuralMemoryFields groups all Neural Memory Actor-specific operations.
+// NeuralMemoryFields groups all Evolutionary Neural Memory Actor-specific operations.
 // Set only the sub-struct relevant to your Intent; others should be nil.
 type NeuralMemoryFields struct {
 	// Intent-specific options (set one based on Intent)
@@ -301,7 +301,7 @@ type BriefHitRecord struct {
 //
 // However, it is important for the developer to understand that the Message struct represents
 // two use cases: (1) sending a message to an Actor, and (2) processing a response message from an Actor.
-// The NeuralMemory field is a special case to ease the developer's use of the Neural Memory Database Actor that is natively part of AIP and Pod-OS.
+// The NeuralMemory field is a special case to ease the developer's use of the Evolutionary Neural Memory Database Actor that is natively part of AIP and Pod-OS.
 //
 // Sending a message to an Actor:
 // The Event, NeuralMemory (if applicable), and Payload fields are used to send a message to an Actor.
@@ -371,7 +371,7 @@ type Message struct {
 	// Payload data (nil if no payload); used to send data to the Actor.
 	Payload *PayloadFields
 
-	// Neural Memory Actor operations (nil for Gateway-only messages)
+	// Evolutionary Neural Memory Actor operations (nil for Gateway-only messages)
 	NeuralMemory *NeuralMemoryFields
 
 	// Response data (populated by decoder, nil for requests)
@@ -656,7 +656,7 @@ type GatewayDefinition struct {
 	NeuralMemoryExecutable string              `podos:"pod_db_command"`        // Full path to the pod_db database handler executable file
 	PeerExecutable         string              `podos:"pod_peer_command"`      // Full path to the peer executable file
 	ShellActors            []ShellActor        // List of Shell Actors to be contained by the Gateway.
-	NeuralMemoryActors     []NeuralMemoryActor // List of Neural Memory Actors to be contained by the Gateway.
+	NeuralMemoryActors     []NeuralMemoryActor // List of Evolutionary Neural Memory Actors to be contained by the Gateway.
 	PeerActors             []PeerActor         // List of Peer Actors to be contained by the Gateway.
 	ScriptActors           []ScriptActor       // List of Script Actors to be contained by the Gateway.
 	MailboxActors          []MailboxActor      // List of Mailbox Actors to be contained by the Gateway.

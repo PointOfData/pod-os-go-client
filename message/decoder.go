@@ -756,7 +756,7 @@ func DecodeMessage(message []byte) (*Message, error) {
 
 	intent, found := IntentFromMessageTypeAndCommand(messageType, command)
 	if !found {
-		// Fallback to messageType-only lookup for non-Neural Memory messages
+		// Fallback to messageType-only lookup for non-Evolutionary Neural Memory messages
 		intent, found = intentFromMessageTypeInt(messageType)
 		if !found {
 			errMsg := fmt.Sprintf("unknown messageType: %d with command: %s", messageType, command)
