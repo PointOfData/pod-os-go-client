@@ -14,23 +14,23 @@ var IntentType = newIntentTypes()
 
 // intentTypes is a struct that defines the intent types for the PodOs system. Struct is not exported.
 type intentTypes struct {
-	StoreEvent               Intent // StoreEvent is used to store a single event object in a Neural Memory database.
+	StoreEvent               Intent // StoreEvent is used to store a single Event Object in a Neural Memory database.
 	StoreData                Intent // StoreData is used to update a new Payload data in an *existing* Event Object identified by UniqueId or Id. When invoked, the previous Data Payload is overwritten.
-	StoreBatchEvents         Intent // StoreBatchEvents is used to store a batch of event objects (including tags) in a Neural Memory database.
-	StoreBatchTags           Intent // StoreBatchTags is used to store a batch of tag objects (associated with an event object) in a Neural Memory database. Also covers the update use case (previously UpdateBatchTags).
-	GetEvent                 Intent // GetEvent is used to retrieve a single event object from a Neural Memory database. Use GetTags=true to retrieve tags for the event.
-	GetEventsForTags         Intent // GetEventsForTags is used to retrieve a batch of event objects from a Neural Memory database by searching for Tags.
-	LinkEvent                Intent // LinkEvent is used to link two event objects in a Neural Memory database. It is also an Event Object itself.
-	UnlinkEvent              Intent // UnlinkEvent is used to unlink two event objects in a Neural Memory database.
+	StoreBatchEvents         Intent // StoreBatchEvents is used to store a batch of Event Objects (including tags) in a Neural Memory database.
+	StoreBatchTags           Intent // StoreBatchTags is used to store a batch of tag objects in an existing Event Object in a Neural Memory database. Also covers the update use case.
+	GetEvent                 Intent // GetEvent is used to retrieve a single Event Object from a Neural Memory database. Use GetTags=true to retrieve tags for the event.
+	GetEventsForTags         Intent // GetEventsForTags is used to retrieve a batch of Event Objects from a Neural Memory database by searching for Tags.
+	LinkEvent                Intent // LinkEvent is used to link two Event Objects in a Neural Memory database. It is also an Event Object itself.
+	UnlinkEvent              Intent // UnlinkEvent is used to unlink two Event Objects in a Neural Memory database.
 	StoreBatchLinks          Intent // StoreBatchLinks is used to store a batch of link objects in a Neural Memory database.
-	StoreEventResponse       Intent // StoreEventResponse is used to store a single event object in a Neural Memory database.
+	StoreEventResponse       Intent // StoreEventResponse is used to confirm a single Event Object in a Neural Memory database.
 	StoreDataResponse        Intent // StoreDataResponse is the response to a StoreData request.
-	StoreBatchEventsResponse Intent // StoreBatchEventsResponse is used to store a batch of event objects (including tags) in a Neural Memory database.
-	StoreBatchTagsResponse   Intent // StoreBatchTagsResponse is used to store/update a batch of tag objects (associated with an event object) in a Neural Memory database.
-	GetEventResponse         Intent // GetEventResponse is used to retrieve a single event object from a Neural Memory database. Use GetTags=true to retrieve tags for the event.
-	GetEventsForTagsResponse Intent // GetEventsForTagsResponse is used to retrieve a batch of event objects from a Neural Memory database by searching for Tags.
-	LinkEventResponse        Intent // LinkEventResponse is used to link two event objects in a Neural Memory database. It is also an Event Object itself.
-	UnlinkEventResponse      Intent // UnlinkEventResponse is used to unlink two event objects in a Neural Memory database.
+	StoreBatchEventsResponse Intent // StoreBatchEventsResponse is used to store a batch of Event Objects (including tags) in a Neural Memory database.
+	StoreBatchTagsResponse   Intent // StoreBatchTagsResponse is used to store/update a batch of tag objects (associated with an Event Object) in a Neural Memory database.
+	GetEventResponse         Intent // GetEventResponse is used to retrieve a single Event Object from a Neural Memory database.
+	GetEventsForTagsResponse Intent // GetEventsForTagsResponse is used to confirm the retrieval of a batch of Event Objects from a Neural Memory database by searching for Tags.
+	LinkEventResponse        Intent // LinkEventResponse is used to link two Event Objects in a Neural Memory database. It is also an Event Object itself.
+	UnlinkEventResponse      Intent // UnlinkEventResponse is used to unlink two Event Objects in a Neural Memory database.
 	StoreBatchLinksResponse  Intent // StoreBatchLinksResponse is used to store a batch of link objects in a Neural Memory database.
 	ActorEcho                Intent // ActorEcho is used to echo a message from the Actor to the client.
 	ActorHalt                Intent // ActorHalt is used to halt the Actor.
