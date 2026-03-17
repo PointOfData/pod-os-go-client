@@ -1,12 +1,12 @@
 # Pod-OS Client Library
 
-A standalone Go package for connecting to Pod-OS Actors and working with the Pod-OS and Actor Information Platform message protocol.
+A standalone Go package for connecting to Pod-OS Actors and working with the Pod-OS and Actor Infrastructure Platform message protocol.
 
 ## Features
 
 - **Connection Management**: TCP/UDP connection handling with retry logic and connection pooling
 - **Message Protocol**: Full support for Pod-OS message encoding/decoding
-- **Intent Types**: All Pod-OS intent types (StoreEvent, GetEvent, LinkEvents, etc.)
+- **Intent Types**: All Pod-OS intent types (StoreEvent, StoreData, GetEvent, LinkEvents, etc.)
 - **Size-Safe Messages**: Built-in guards for malicious or accidental oversize messages (hard 2 GiB limit)
 - **Message Validation**: Struct-level, payload-level, and wire-level validation with dual-audience (engineer + LLM) error output
 - **Knowledge Base**: Embedded Pod-OS documentation and specifications
@@ -73,7 +73,7 @@ msg := &message.Message{
     },
     NeuralMemory: &message.NeuralMemoryFields{
         Link: &message.LinkFields{
-            EventA: "a", EventB: "b",
+            EventUniqueIdA: "a", EventUniqueIdB: "b",
             Category: "related", StrengthA: 1.0, StrengthB: 1.0,
             Timestamp: "+1234567890.123456",
             OwnerID:   "owner-event-id",
@@ -239,5 +239,26 @@ The core module has no OpenTelemetry dependency. Applications that want tracing 
 
 ## License
 
-[Your License Here]
+MIT License
+
+Copyright (c) 2026 PointOfData
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
 

@@ -334,6 +334,12 @@ func parseLinkTagLine(line string) (string, *TagOutput) {
 			tag.Value = value
 		}
 	}
+	if owner, exists := recordMap["owner"]; exists {
+		tag.Owner = owner
+	}
+	if timestamp, exists := recordMap["timestamp"]; exists {
+		tag.Timestamp = timestamp
+	}
 
 	return linkId, tag
 }
@@ -347,7 +353,7 @@ func parseTargetTagLine(line string) (string, *TagOutput) {
 		return "", nil
 	}
 
-	tag := &TagOutput{}
+	tag := &TagOutput{TargetTagId: targetId}
 	if freqStr, exists := recordMap["freq"]; exists {
 		tag.Frequency, _ = strconv.Atoi(freqStr)
 	}
@@ -358,6 +364,12 @@ func parseTargetTagLine(line string) (string, *TagOutput) {
 		} else {
 			tag.Value = value
 		}
+	}
+	if owner, exists := recordMap["owner"]; exists {
+		tag.Owner = owner
+	}
+	if timestamp, exists := recordMap["timestamp"]; exists {
+		tag.Timestamp = timestamp
 	}
 
 	return targetId, tag

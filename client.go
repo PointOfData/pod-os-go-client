@@ -136,6 +136,11 @@ type Client struct {
 	reconnectingMu   sync.Mutex // Protects reconnecting flag
 	reconnectAttempt int        // Current reconnection attempt number
 
+	// unmatchedHandler is called (in a new goroutine) when the background
+	// receiver gets a message whose MessageId does not match any pending request.
+	// Set via SetUnmatchedMessageHandler after NewClient returns.
+	unmatchedHandler func(*message.Message)
+
 	logger log.Logger
 }
 
@@ -707,10 +712,23 @@ func (c *Client) receiveLoop() {
 			}
 		} else {
 			if c.logger.Enabled(log.LevelDebug) {
-				c.logger.Debug("no pending request for MessageId", "message_id", messageId)
+				c.logger.Debug("no pending request for MessageId — dispatching to unmatched handler", "message_id", messageId, "intent", response.Envelope.Intent.Name)
+			}
+			if c.unmatchedHandler != nil {
+				go c.unmatchedHandler(response)
 			}
 		}
 	}
+}
+
+// SetUnmatchedMessageHandler registers a handler that is called (in a new goroutine)
+// for every message received by the background receiver that does not match any
+// pending outbound request. This enables an Actor to receive inbound ActorRequest
+// messages from other Actors while still using concurrent mode for its own queries.
+// Must be called before StartReceiver (or before NewClient when EnableConcurrentMode
+// is true) to avoid a race; calling it after is safe but may miss early messages.
+func (c *Client) SetUnmatchedMessageHandler(fn func(*message.Message)) {
+	c.unmatchedHandler = fn
 }
 
 // notifyPendingCallersConnectionLost notifies all pending callers that the connection was lost.

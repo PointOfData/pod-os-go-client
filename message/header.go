@@ -44,6 +44,9 @@ func ConstructHeader(msg *Message, intent Intent, connectionIdUuid string) strin
 	case "StoreEvent": // Store Event
 		return StoreEventMessageHeader(msg) // VERIFIED: DO NOT CHANGE
 
+	case "StoreData": // Store Data
+		return StoreDataMessageHeader(msg)
+
 	case "LinkEvent": // Link Event
 		return LinkEventsMessageHeader(msg) // VERIFIED: DO NOT CHANGE
 
@@ -223,6 +226,39 @@ func StoreEventMessageHeader(msg *Message) string {
 			_header.WriteString(tagName + "=" + tagValue + "\t")
 		}
 	}
+	if msg.MessageId != "" {
+		_header.WriteString("_msg_id=" + msg.MessageId)
+	}
+	return _header.String()
+}
+
+// StoreDataMessageHeader constructs the Neural Memory Database store data message header.
+// StoreData stores data directly in the Neural Memory database, associated with a unique identifier,
+// timestamp, and location. Unlike StoreEvent, it does not store tags.
+//
+// Params:
+//
+// msg: The Message struct containing StoreData fields.
+// Required fields: Event.UniqueId OR Event.Id, Event.Timestamp, Event.Location, Event.LocationSeparator,
+// Payload.Data, Payload.MimeType.
+//
+// Returns: string for header
+func StoreDataMessageHeader(msg *Message) string {
+	var _header strings.Builder
+	_header.WriteString("_db_cmd=store_data\t")
+	if msg.Event.UniqueId != "" {
+		_header.WriteString("unique_id=" + msg.Event.UniqueId + "\t")
+	} else if msg.Event.Id != "" {
+		_header.WriteString("event_id=" + forceASCII(msg.Event.Id) + "\t")
+	}
+	if msg.Event.Timestamp != "" {
+		_header.WriteString("timestamp=" + msg.Event.Timestamp + "\t")
+	} else {
+		_header.WriteString("timestamp=" + GetTimestamp() + "\t")
+	}
+	_header.WriteString("loc_delim=" + msg.Event.LocationSeparator + "\t")
+	_header.WriteString("loc=" + msg.Event.Location + "\t")
+	_header.WriteString("mime=" + msg.PayloadMimeType() + "\t")
 	if msg.MessageId != "" {
 		_header.WriteString("_msg_id=" + msg.MessageId)
 	}
@@ -447,6 +483,9 @@ func GetEventsForTagMessageHeader(msg *Message) string {
 		if opts.GetTargetTags {
 			header.WriteString("get_target_tags=Y\t") // V
 		}
+		if opts.GetEventObjectCount {
+			header.WriteString("get_eo_count=Y\t") // V
+		}
 		if invertHitTagFilter {
 			header.WriteString("invert_hit_tag_filter=Y\t") // V
 		}
@@ -459,7 +498,7 @@ func GetEventsForTagMessageHeader(msg *Message) string {
 			header.WriteString("event_high=" + forceASCII(opts.EventPatternHigh) + "\t") // V
 		}
 		if opts.LinkTagFilter != "" {
-			header.WriteString("link_tag_filter=" + forceASCII(opts.LinkTagFilter) + "\t") // V
+			header.WriteString("link_tag_pattern=" + forceASCII(opts.LinkTagFilter) + "\t") // V
 		}
 		if opts.LinkedEventsFilter != "" {
 			header.WriteString("linked_events_tag_filter=" + forceASCII(opts.LinkedEventsFilter) + "\t") // V

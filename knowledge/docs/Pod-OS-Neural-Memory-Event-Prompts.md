@@ -44,7 +44,7 @@ These are optional design patterns that can be used to create complex data struc
 - Knowledge Graph: [to be completed]
 
 ### Storing Events
-Events are stored as a single Event Object [StoreEvent Intent type] or as a batch of Event Objects [StoreBatchEvents Intent type]. 
+Events are stored as a single Event Object [StoreEvent Intent type] or as a batch of Event Objects [StoreBatchEvents Intent type]. Data can also be stored directly using the StoreData Intent which omits tags and is intended for associating raw payload data with a unique identifier, timestamp, and location.
 
 #### Rules:
 
@@ -222,6 +222,32 @@ For example:
 Facets are a variation of tagvalue which enables greater flexibility and improved search. Their pattern is:
 frequency=key_name=key_value
 
+
+### Storing Data
+Data is stored directly in the Neural Memory database [StoreData Intent type]. Unlike StoreEvent, StoreData does not include tags. It is used for associating raw payload data with a unique identifier, timestamp, and location. The payload data is stored as-is and cannot be altered after storage.
+
+#### Required fields:
+- Envelope: To, From, Intent
+- EventFields: UniqueId OR Id, Timestamp, Location, LocationSeparator
+- PayloadFields: Data, MimeType
+
+#### Example Pod-OS StoreData Format:
+```
+Message{
+    To:                     "mem@zeroth." + domainName, // The recipient actor@gateway
+    From:                   "Pod-OSDashboardNode@zeroth." + domainName, // The sender in the form client@gateway.
+    ClientName:             "Pod-OSDashboardNode", // The client name.
+    MessageId:              [GUID], // A unique identifier for the message.
+    Intent:                 IntentType.StoreData, // The intent of the message to store data.
+    EventUniqueId:          [GUID], // A unique identifier for the data record.
+    EventTimestamp:         message.GetTimestamp(), // The timestamp of the data record.
+    EventLocation:          "TERRA|47.619463|-122.518691", // The location; can be geospatial, temporal, or other.
+    EventLocationSeparator: "|",
+    PayloadMimeType:        "application/octet-stream", // The MIME type of the payload data.
+    PayloadData:            [binary or text data], // The data to store (up to 2 GB).
+    PayloadDataType:        RAW, // The data type of the payload data.
+}
+```
 
 ### Linking Events
 

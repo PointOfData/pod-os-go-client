@@ -15,6 +15,7 @@ var IntentType = newIntentTypes()
 // intentTypes is a struct that defines the intent types for the PodOs system. Struct is not exported.
 type intentTypes struct {
 	StoreEvent               Intent // StoreEvent is used to store a single event object in a Neural Memory database.
+	StoreData                Intent // StoreData is used to update a new Payload data in an *existing* Event Object identified by UniqueId or Id. When invoked, the previous Data Payload is overwritten.
 	StoreBatchEvents         Intent // StoreBatchEvents is used to store a batch of event objects (including tags) in a Neural Memory database.
 	StoreBatchTags           Intent // StoreBatchTags is used to store a batch of tag objects (associated with an event object) in a Neural Memory database. Also covers the update use case (previously UpdateBatchTags).
 	GetEvent                 Intent // GetEvent is used to retrieve a single event object from a Neural Memory database. Use GetTags=true to retrieve tags for the event.
@@ -23,6 +24,7 @@ type intentTypes struct {
 	UnlinkEvent              Intent // UnlinkEvent is used to unlink two event objects in a Neural Memory database.
 	StoreBatchLinks          Intent // StoreBatchLinks is used to store a batch of link objects in a Neural Memory database.
 	StoreEventResponse       Intent // StoreEventResponse is used to store a single event object in a Neural Memory database.
+	StoreDataResponse        Intent // StoreDataResponse is the response to a StoreData request.
 	StoreBatchEventsResponse Intent // StoreBatchEventsResponse is used to store a batch of event objects (including tags) in a Neural Memory database.
 	StoreBatchTagsResponse   Intent // StoreBatchTagsResponse is used to store/update a batch of tag objects (associated with an event object) in a Neural Memory database.
 	GetEventResponse         Intent // GetEventResponse is used to retrieve a single event object from a Neural Memory database. Use GetTags=true to retrieve tags for the event.
@@ -67,6 +69,7 @@ type intentTypes struct {
 func newIntentTypes() *intentTypes {
 	return &intentTypes{
 		StoreEvent:               Intent{Name: "StoreEvent", NeuralMemoryCommand: "store", MessageType: 1000, RoutingMessageType: "MEM_REQ"},
+		StoreData:                Intent{Name: "StoreData", NeuralMemoryCommand: "store_data", MessageType: 1000, RoutingMessageType: "MEM_REQ"},
 		StoreBatchEvents:         Intent{Name: "StoreBatchEvents", NeuralMemoryCommand: "store_batch", MessageType: 1000, RoutingMessageType: "MEM_REQ"},
 		StoreBatchTags:           Intent{Name: "StoreBatchTags", NeuralMemoryCommand: "tag_store_batch", MessageType: 1000, RoutingMessageType: "MEM_REQ"},
 		GetEvent:                 Intent{Name: "GetEvent", NeuralMemoryCommand: "get", MessageType: 1000, RoutingMessageType: "MEM_REQ"},
@@ -75,6 +78,7 @@ func newIntentTypes() *intentTypes {
 		UnlinkEvent:              Intent{Name: "UnlinkEvent", NeuralMemoryCommand: "unlink", MessageType: 1000, RoutingMessageType: "MEM_REQ"},
 		StoreBatchLinks:          Intent{Name: "StoreBatchLinks", NeuralMemoryCommand: "link_batch", MessageType: 1000, RoutingMessageType: "MEM_REQ"},
 		StoreEventResponse:       Intent{Name: "StoreEventResponse", NeuralMemoryCommand: "store", MessageType: 1001, RoutingMessageType: "MEM_REPLY"},
+		StoreDataResponse:        Intent{Name: "StoreDataResponse", NeuralMemoryCommand: "store_data", MessageType: 1001, RoutingMessageType: "MEM_REPLY"},
 		StoreBatchEventsResponse: Intent{Name: "StoreBatchEventsResponse", NeuralMemoryCommand: "store_batch", MessageType: 1001, RoutingMessageType: "MEM_REPLY"},
 		StoreBatchTagsResponse:   Intent{Name: "StoreBatchTagsResponse", NeuralMemoryCommand: "tag_store_batch", MessageType: 1001, RoutingMessageType: "MEM_REPLY"},
 		GetEventResponse:         Intent{Name: "GetEventResponse", NeuralMemoryCommand: "get", MessageType: 1001, RoutingMessageType: "MEM_REPLY"},
@@ -121,6 +125,7 @@ func newIntentTypes() *intentTypes {
 // Used when decoding MEM_REQ (1000) messages to determine the intent from the _command header field.
 var commandToIntent = map[string]Intent{
 	"store":           IntentType.StoreEvent,
+	"store_data":      IntentType.StoreData,
 	"store_batch":     IntentType.StoreBatchEvents,
 	"tag_store_batch": IntentType.StoreBatchTags,
 	"get":             IntentType.GetEvent,
@@ -134,14 +139,15 @@ var commandToIntent = map[string]Intent{
 // Used when decoding MEM_REPLY (1001) messages to determine the intent from the _type/_command header field.
 var commandToResponseIntent = map[string]Intent{
 	"store":           IntentType.StoreEventResponse,
+	"store_data":      IntentType.StoreDataResponse,
 	"store_batch":     IntentType.StoreBatchEventsResponse,
 	"tag_store_batch": IntentType.StoreBatchTagsResponse,
 	"get":             IntentType.GetEventResponse,
 	"events_for_tag":  IntentType.GetEventsForTagsResponse,
 	"events_for_tags": IntentType.GetEventsForTagsResponse, // Handle both variants
-	"link":             IntentType.LinkEventResponse,
-	"unlink":           IntentType.UnlinkEventResponse,
-	"link_batch":       IntentType.StoreBatchLinksResponse,
+	"link":            IntentType.LinkEventResponse,
+	"unlink":          IntentType.UnlinkEventResponse,
+	"link_batch":      IntentType.StoreBatchLinksResponse,
 }
 
 // IntentFromCommand returns the Intent corresponding to the given command string.
@@ -209,11 +215,11 @@ func IntentFromMessageType(messageType any) (Intent, bool) {
 func intentFromMessageTypeInt(messageType int) (Intent, bool) {
 	allIntents := []Intent{
 		// Request intents (MEM_REQ = 1000)
-		IntentType.StoreEvent, IntentType.StoreBatchEvents, IntentType.StoreBatchTags,
+		IntentType.StoreEvent, IntentType.StoreData, IntentType.StoreBatchEvents, IntentType.StoreBatchTags,
 		IntentType.GetEvent, IntentType.GetEventsForTags,
 		IntentType.LinkEvent, IntentType.UnlinkEvent, IntentType.StoreBatchLinks,
 		// Response intents (MEM_REPLY = 1001)
-		IntentType.StoreEventResponse, IntentType.StoreBatchEventsResponse, IntentType.StoreBatchTagsResponse,
+		IntentType.StoreEventResponse, IntentType.StoreDataResponse, IntentType.StoreBatchEventsResponse, IntentType.StoreBatchTagsResponse,
 		IntentType.GetEventResponse, IntentType.GetEventsForTagsResponse,
 		IntentType.LinkEventResponse, IntentType.UnlinkEventResponse, IntentType.StoreBatchLinksResponse,
 		// Gateway/Actor intents
