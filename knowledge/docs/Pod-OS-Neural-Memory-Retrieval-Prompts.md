@@ -460,6 +460,74 @@ msg := &message.Message{
 }
 ```
 
+#### Example 3: Bulk GetEvent by ID
+
+To retrieve multiple events by ID in a single request, use `GetEventsForTags` with a series of OR clauses — one per event. This avoids issuing one `GetEvent` request per event. Each search clause must use `filter_type:eq` for an exact match, and the same tag value pattern is supplied to both `low` and `filter_low`.
+
+Which ID type to use is an either/or decision:
+
+- **By internal EventId**: tag value pattern is `event_id=<event_id>`
+- **By developer UniqueId**: tag value pattern is `\x01u=<unique_id>`. The `\x01` byte prefix (ASCII SOH, `0x01`) is required to avoid collisions with user-defined tag keys.
+
+**Option A — Bulk lookup by EventId:**
+
+```go
+eventIDs := []string{
+    "2024.01.15.14.30.45.123456@actor1|location1|segment1",
+    "2024.01.16.09.00.00.000001@actor1|location1|segment1",
+}
+
+var clauses strings.Builder
+for _, eid := range eventIDs {
+    val := "event_id=" + eid
+    clauses.WriteString(fmt.Sprintf(
+        "clause_type:S\tboolean:or\tlow:%s\tfilter_type:eq\tfilter_low:%s\n",
+        val, val,
+    ))
+}
+```
+
+**Option B — Bulk lookup by UniqueId:**
+
+```go
+uniqueIDs := []string{"uid-001", "uid-002", "uid-003"}
+
+var clauses strings.Builder
+for _, uid := range uniqueIDs {
+    val := "\x01u=" + uid
+    clauses.WriteString(fmt.Sprintf(
+        "clause_type:S\tboolean:or\tlow:%s\tfilter_type:eq\tfilter_low:%s\n",
+        val, val,
+    ))
+}
+```
+
+**Send the request (same for both options):**
+
+```go
+msg := &message.Message{
+    Envelope: message.Envelope{
+        To:         "mem@zeroth.example.com",
+        From:       "MyClient@zeroth.example.com",
+        Intent:     message.IntentType.GetEventsForTags,
+        ClientName: "MyClient",
+        MessageId:  uuid.New().String(),
+    },
+    NeuralMemory: &message.NeuralMemoryFields{
+        Search: &message.SearchOptions{
+            Clause:        clauses.String(),
+            BufferResults: true,
+            BufferFormat:  "0",
+        },
+        GetEventsForTags: &message.GetEventsForTagsOptions{
+            BufferResults: true,
+        },
+    },
+}
+```
+
+Each clause uses `boolean:or` so the result set accumulates one event per ID. The `filter_type:eq` enforces an exact match against the tag value. The response `EventResults` list will contain one entry per matched event.
+
 #### Example Response:
 The response is populated in the `Response` field of the Message struct:
 

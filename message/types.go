@@ -488,11 +488,13 @@ type BatchLinkEventSpec struct {
 // Tag represents a piece of important data for an Event Object.
 // This is a Facet construction extending tagvalue into key/value structure.
 type Tag struct {
-	Frequency int    // Count of occurrences
-	Key       string // Tag key/category
-	Value     any    // Supports string, int, float64, bool, map, slice, JSON objects
-	Timestamp string `podos:"timestamp"` // Event timestamp POSIX timestamp in microseconds; formatted as a string with 6 decimal places with + or - sign relative to January 1, 1970 00:00:00 UTC
-	Id        string // Tag's Event Object ID
+	Frequency     int    // Count of occurrences
+	Key           string // Tag key/category
+	Value         any    // Supports string, int, float64, bool, map, slice, JSON objects
+	Timestamp     string `podos:"timestamp"` // Event timestamp POSIX timestamp in microseconds; formatted as a string with 6 decimal places with + or - sign relative to January 1, 1970 00:00:00 UTC
+	Id            string // Tag's Event Object ID
+	Owner         string // Tag owner Event Object ID
+	OwnerUniqueID string // Tag owner unique identifier
 }
 
 // StringValue returns the Value as a string.

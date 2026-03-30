@@ -266,6 +266,8 @@ Returns `nil` immediately if `!validationEnabled`. Otherwise returns all violati
 - `Envelope.MessageId` mapped to `_msg_id` OPTIONAL
 {Tags}
 - `Tag.Frequency`, `Tag.Key`, `Tag.Value` mapped to `tag_i=freq:key=value\t` where i is the slice position and the tab-delimited tags are appended to each event
+- `Tag.Owner` mapped to tag owner OPTIONAL
+- `Tag.OwnerUniqueID` mapped to tag owner unique identifier OPTIONAL
 
 **StoreBatchEventsResponse**
 {Intent}
@@ -303,6 +305,8 @@ Returns `nil` immediately if `!validationEnabled`. Otherwise returns all violati
 - Event.Payload non-nil; Event.Payload of type `NeuralMemory.Tags` REQUIRED
 `TagList`
 - `Tag.Frequency`, `Tag.Key`, `Tag.Value` mapped to `freq=key=value\n`
+- `Tag.Owner` mapped to tag owner OPTIONAL
+- `Tag.OwnerUniqueID` mapped to tag owner unique identifier OPTIONAL
 
 **StoreBatchTagsResponse**
 {Intent}
