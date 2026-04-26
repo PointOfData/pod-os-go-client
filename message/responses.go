@@ -186,6 +186,11 @@ func parseGetEventsForTagsPayload(msg *Message) (eventResults []EventFields, ok 
 				}
 			}
 
+			// Populate UniqueIdA from parent event's unique_id (links are stored on the source event)
+			if link.UniqueIdA == "" && event.UniqueId != "" {
+				link.UniqueIdA = event.UniqueId
+			}
+
 			links = append(links, *link)
 		}
 
@@ -586,6 +591,10 @@ func parseGetEventResponse(msg *Message, headerMap *map[string]string) (tags []T
 			if targetTags, exists := targetTagsMap[link.EventB]; exists {
 				link.TargetTags = targetTags
 			}
+		}
+		// Populate UniqueIdA from parent event's unique_id (links are stored on the source event)
+		if link.UniqueIdA == "" && msg.Event != nil && msg.Event.UniqueId != "" {
+			link.UniqueIdA = msg.Event.UniqueId
 		}
 		links = append(links, *link)
 	}

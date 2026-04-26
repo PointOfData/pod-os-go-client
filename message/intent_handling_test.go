@@ -1105,3 +1105,75 @@ func TestSerializeTagValue(t *testing.T) {
 		})
 	}
 }
+
+func TestDecodeMessage_GetEventsForTagsResponse_LinksPopulateUniqueIdA(t *testing.T) {
+	header := "_type=events_for_tag\t_status=OK\t_count=1"
+	payload := "_event_id=evt1\tunique_id=src_uid\ttag:1:_unique_id=src_uid\n" +
+		"_link=link1\tsource=evt1\ttarget=evt2\tstrength=0.9\tcategory=describes\ttarget_unique_id=tgt_uid"
+
+	msg := buildMinimalMessage(
+		"mem@gateway.example.com",
+		"client@gateway.example.com",
+		header,
+		1001,
+		0,
+		payload,
+	)
+
+	decoded, err := DecodeMessage(msg)
+	if err != nil {
+		t.Fatalf("DecodeMessage() error = %v", err)
+	}
+
+	if len(decoded.Response.EventRecords) != 1 {
+		t.Fatalf("EventRecords count = %d, want 1", len(decoded.Response.EventRecords))
+	}
+
+	event := decoded.Response.EventRecords[0]
+	if len(event.Links) != 1 {
+		t.Fatalf("Links count = %d, want 1", len(event.Links))
+	}
+
+	link := event.Links[0]
+	if link.UniqueIdA != "src_uid" {
+		t.Errorf("Link.UniqueIdA = %q, want %q", link.UniqueIdA, "src_uid")
+	}
+	if link.UniqueIdB != "tgt_uid" {
+		t.Errorf("Link.UniqueIdB = %q, want %q", link.UniqueIdB, "tgt_uid")
+	}
+}
+
+func TestDecodeMessage_GetEventResponse_LinksPopulateUniqueIdA(t *testing.T) {
+	header := "_type=get\t_status=OK\t_event_id=evt1\t_unique_id=src_uid"
+	payload := "_link=link1\ttarget_event=evt2\ttarget_unique_id=tgt_uid\tstrength=0.9\tcategory=describes"
+
+	msg := buildMinimalMessage(
+		"mem@gateway.example.com",
+		"client@gateway.example.com",
+		header,
+		1001,
+		0,
+		payload,
+	)
+
+	decoded, err := DecodeMessage(msg)
+	if err != nil {
+		t.Fatalf("DecodeMessage() error = %v", err)
+	}
+
+	if decoded.Event == nil {
+		t.Fatal("Event is nil")
+	}
+
+	if len(decoded.Event.Links) != 1 {
+		t.Fatalf("Links count = %d, want 1", len(decoded.Event.Links))
+	}
+
+	link := decoded.Event.Links[0]
+	if link.UniqueIdA != "src_uid" {
+		t.Errorf("Link.UniqueIdA = %q, want %q", link.UniqueIdA, "src_uid")
+	}
+	if link.UniqueIdB != "tgt_uid" {
+		t.Errorf("Link.UniqueIdB = %q, want %q", link.UniqueIdB, "tgt_uid")
+	}
+}

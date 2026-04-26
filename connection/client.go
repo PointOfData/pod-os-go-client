@@ -200,6 +200,10 @@ func NewClient(ctx context.Context, cfg ClientConfig, network string, host strin
 	client.TCPKeepAlivePeriod = 30 * time.Second
 
 	if c, ok := client.Conn.(*net.TCPConn); ok {
+		if err := c.SetNoDelay(true); err != nil {
+			logger.Warn("failed to set TCP_NODELAY", "error", err)
+			span.RecordError(err)
+		}
 		if err := c.SetKeepAlive(client.TCPKeepAlive); err != nil {
 			logger.Warn("failed to set keep alive", "error", err)
 			span.RecordError(err)
