@@ -195,8 +195,8 @@ func NewClient(ctx context.Context, cfg ClientConfig, network string, host strin
 
 	client.connected.Store(true)
 
-	// Set the TCP keep alive.
-	client.TCPKeepAlive = false
+	// Set TCP keep alive (enabled by default for faster dead-connection detection).
+	client.TCPKeepAlive = true
 	client.TCPKeepAlivePeriod = 30 * time.Second
 
 	if c, ok := client.Conn.(*net.TCPConn); ok {
@@ -711,6 +711,16 @@ func (c *Client) Reconnect() error {
 	}
 
 	c.connected.Store(true)
+
+	// Re-apply TCP settings after reconnection
+	if tcpConn, ok := c.Conn.(*net.TCPConn); ok {
+		_ = tcpConn.SetNoDelay(true)
+		_ = tcpConn.SetKeepAlive(c.TCPKeepAlive)
+		if c.TCPKeepAlive {
+			_ = tcpConn.SetKeepAlivePeriod(c.TCPKeepAlivePeriod)
+		}
+	}
+
 	c.logger.Info("reconnected to server", "addr", net.JoinHostPort(c.Host, c.Port), "actor", c.ActorName)
 	span.AddEvent("Reconnected to server")
 

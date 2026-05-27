@@ -775,15 +775,13 @@ func (c *Client) attemptReconnection() bool {
 
 	reconnectCfg := &c.cfg.ReconnectConfig
 	maxRetries := reconnectCfg.MaxRetries
-	if maxRetries == 0 {
-		maxRetries = 10 // Default
-	}
+	unlimited := maxRetries == 0
 
 	backoff := reconnectCfg.GetInitialBackoff()
 	multiplier := reconnectCfg.GetBackoffMultiplier()
 	maxBackoff := reconnectCfg.GetMaxBackoff()
 
-	for attempt := 1; attempt <= maxRetries || maxRetries == 0; attempt++ {
+	for attempt := 1; unlimited || attempt <= maxRetries; attempt++ {
 		// Check if receiver context is cancelled
 		select {
 		case <-c.receiverCtx.Done():
@@ -1056,7 +1054,21 @@ func (c *Client) sendMessageWithCorrelation(ctx context.Context, msg *message.Me
 
 // sendMessageSync sends a message using synchronous send-then-receive pattern.
 // Used when background receiver is not active.
+// If a connection error occurs and reconnection is enabled, it will attempt to
+// reconnect and retry the message once.
 func (c *Client) sendMessageSync(ctx context.Context, msg *message.Message) (*message.Message, error) {
+	resp, err := c.doSendMessageSync(ctx, msg)
+	if err != nil && c.cfg.ReconnectConfig.IsEnabled() && isConnectionError(err.Error()) {
+		c.logger.Info("sync send failed with connection error, attempting reconnection", "actor", c.gatewayActorName, "error", err)
+		if c.attemptReconnection() {
+			return c.doSendMessageSync(ctx, msg)
+		}
+	}
+	return resp, err
+}
+
+// doSendMessageSync performs the actual synchronous send-then-receive.
+func (c *Client) doSendMessageSync(ctx context.Context, msg *message.Message) (*message.Message, error) {
 	// Encode message
 	conversationUUID := uuid.New().String()
 	socketMsg, err := message.EncodeMessage(msg, conversationUUID)
@@ -1113,7 +1125,21 @@ func (c *Client) sendMessageSync(ctx context.Context, msg *message.Message) (*me
 }
 
 // sendMessageSyncRaw is like sendMessageSync but also returns the raw response bytes.
+// If a connection error occurs and reconnection is enabled, it will attempt to
+// reconnect and retry the message once.
 func (c *Client) sendMessageSyncRaw(ctx context.Context, msg *message.Message) (*message.Message, []byte, error) {
+	resp, raw, err := c.doSendMessageSyncRaw(ctx, msg)
+	if err != nil && c.cfg.ReconnectConfig.IsEnabled() && isConnectionError(err.Error()) {
+		c.logger.Info("sync send (raw) failed with connection error, attempting reconnection", "actor", c.gatewayActorName, "error", err)
+		if c.attemptReconnection() {
+			return c.doSendMessageSyncRaw(ctx, msg)
+		}
+	}
+	return resp, raw, err
+}
+
+// doSendMessageSyncRaw performs the actual synchronous send-then-receive with raw bytes.
+func (c *Client) doSendMessageSyncRaw(ctx context.Context, msg *message.Message) (*message.Message, []byte, error) {
 	conversationUUID := uuid.New().String()
 	socketMsg, err := message.EncodeMessage(msg, conversationUUID)
 	if err != nil {
