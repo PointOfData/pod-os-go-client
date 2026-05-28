@@ -10,6 +10,7 @@ A standalone Go package for connecting to Pod-OS Actors and working with the Pod
 - **Size-Safe Messages**: Built-in guards for malicious or accidental oversize messages (hard 2 GiB limit)
 - **Message Validation**: Struct-level, payload-level, and wire-level validation with dual-audience (engineer + LLM) error output
 - **Knowledge Base**: Embedded Pod-OS documentation and specifications
+- **Automatic Reconnection**: Configurable reconnect with exponential backoff, connection state callbacks, and transparent send-side retry
 - **Zero Dashboard Dependencies**: No web framework or dashboard-specific code
 
 ## Installation
@@ -169,6 +170,35 @@ if errs := message.ValidateRawMessage(raw); len(errs) != 0 {
 }
 decoded, err := message.DecodeMessage(raw)
 ```
+
+## Reconnection & Connection State
+
+When `ReconnectConfig` is enabled (the default), the client automatically handles connection recovery:
+
+- **Send methods block during reconnect** — `SendMessage`, `SendMessageWithRaw`, and their internal variants wait for an in-progress reconnect to complete rather than failing immediately. If the reconnect succeeds the send proceeds transparently; if it fails or the caller's context expires, `ErrConnectionLost` is returned.
+- **`SendControlMessage` does not wait** — Control messages are fire-and-forget and will fail immediately if the connection is down.
+- **`Close()` prevents reconnect** — After `Close` returns the client will never attempt to reconnect, and any in-flight `waitForReconnect` callers are unblocked.
+
+### Observing Connection State
+
+Register a callback to be notified of every connection state transition:
+
+```go
+client.OnConnectionStateChange(func(state podos.ConnectionState, err error) {
+    log.Printf("connection state: %s (err=%v)", state, err)
+})
+```
+
+The `ConnectionState` values are:
+
+| State | Error param | Meaning |
+|---|---|---|
+| `StateConnected` | `nil` | Reconnect succeeded (not emitted on initial connect) |
+| `StateDisconnected` | cause | Connection was lost |
+| `StateReconnecting` | trigger error | Reconnect attempt starting |
+| `StateReconnectFailed` | last error | All reconnect attempts exhausted |
+
+The callback is invoked synchronously in the reconnect path — keep it fast and non-blocking.
 
 ## Logging and Telemetry
 

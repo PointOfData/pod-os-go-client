@@ -29,6 +29,31 @@ var (
 // to the gateway was lost. Callers can check for this error and retry their request.
 var ErrConnectionLost = errors.New("connection to gateway was lost during request")
 
+// ConnectionState represents the current state of a Client's connection.
+type ConnectionState int
+
+const (
+	StateConnected       ConnectionState = iota // Connection is active (emitted after successful reconnect)
+	StateDisconnected                           // Connection was lost (err is the cause)
+	StateReconnecting                           // Reconnect attempt starting (err is the trigger that caused disconnect)
+	StateReconnectFailed                        // All reconnect attempts exhausted (err is the last failure)
+)
+
+func (s ConnectionState) String() string {
+	switch s {
+	case StateConnected:
+		return "connected"
+	case StateDisconnected:
+		return "disconnected"
+	case StateReconnecting:
+		return "reconnecting"
+	case StateReconnectFailed:
+		return "reconnect_failed"
+	default:
+		return "unknown"
+	}
+}
+
 // responseWithRaw holds a decoded message and the raw wire bytes for callers that need both.
 type responseWithRaw struct {
 	Msg *message.Message
@@ -135,6 +160,14 @@ type Client struct {
 	reconnecting     bool       // Whether a reconnection is in progress
 	reconnectingMu   sync.Mutex // Protects reconnecting flag
 	reconnectAttempt int        // Current reconnection attempt number
+	reconnectCond    *sync.Cond // Broadcast when reconnect finishes (success or failure)
+	closed           bool       // Set by Close(); prevents reconnect after shutdown
+
+	// Connection state observer — called on every state transition. Set via
+	// OnConnectionStateChange; nil means no observer. The callback is invoked
+	// synchronously inside the reconnect path, so implementations should be fast
+	// and non-blocking (e.g. log.Printf).
+	stateHandler func(ConnectionState, error)
 
 	// unmatchedHandler is called (in a new goroutine) when the background
 	// receiver gets a message whose MessageId does not match any pending request.
@@ -396,6 +429,7 @@ func NewClient(ctx context.Context, cfg config.Config) (*Client, error) {
 		pendingWithRaw:   make(map[string]chan *responseWithRaw),
 		logger:           logger,
 	}
+	client.reconnectCond = sync.NewCond(&client.reconnectingMu)
 
 	// Register the new client (double-check to prevent race conditions)
 	registryMu.Lock()
@@ -613,8 +647,7 @@ func (c *Client) receiveLoop() {
 		if !c.IsConnected() {
 			// Attempt reconnection if enabled
 			if c.cfg.ReconnectConfig.IsEnabled() {
-				if c.attemptReconnection() {
-					// Reconnection successful, continue receiving
+				if c.attemptReconnection(nil) {
 					continue
 				}
 			}
@@ -643,14 +676,14 @@ func (c *Client) receiveLoop() {
 			// Check if it's a connection error that requires reconnection
 			if isConnectionError(errStr) {
 				c.logger.Error("connection error", "actor", c.gatewayActorName, "error", receiveErr)
+				c.emitState(StateDisconnected, receiveErr)
 
 				// Notify pending callers that connection was lost
 				c.notifyPendingCallersConnectionLost()
 
 				// Attempt reconnection if enabled
 				if c.cfg.ReconnectConfig.IsEnabled() {
-					if c.attemptReconnection() {
-						// Reconnection successful, continue receiving
+					if c.attemptReconnection(receiveErr) {
 						continue
 					}
 				}
@@ -721,6 +754,70 @@ func (c *Client) receiveLoop() {
 	}
 }
 
+// OnConnectionStateChange registers a callback that fires on every connection state
+// transition. The error parameter is:
+//   - StateDisconnected: the error that caused the disconnect.
+//   - StateReconnecting: the trigger error (may be nil if the trigger is unknown).
+//   - StateConnected: nil (reconnect succeeded).
+//   - StateReconnectFailed: the last reconnect attempt error.
+//
+// Note: StateConnected is not emitted for the initial connection in NewClient because
+// no handler can be registered before the constructor returns. It is only emitted
+// after a successful reconnect.
+//
+// The callback is invoked synchronously so it should be fast and non-blocking.
+// Safe to call before or after StartReceiver.
+func (c *Client) OnConnectionStateChange(fn func(ConnectionState, error)) {
+	c.reconnectingMu.Lock()
+	c.stateHandler = fn
+	c.reconnectingMu.Unlock()
+}
+
+// emitState calls the registered state handler, if any.
+func (c *Client) emitState(state ConnectionState, err error) {
+	c.reconnectingMu.Lock()
+	fn := c.stateHandler
+	c.reconnectingMu.Unlock()
+	if fn != nil {
+		fn(state, err)
+	}
+}
+
+// waitForReconnect blocks until the client is connected or the context expires.
+// Returns true if the connection was restored, false otherwise.
+func (c *Client) waitForReconnect(ctx context.Context) bool {
+	if c.IsConnected() {
+		return true
+	}
+
+	// Poll via the condition variable that attemptReconnection broadcasts on.
+	// We use a goroutine to bridge ctx cancellation into the cond.Wait loop
+	// because sync.Cond has no native context support.
+	done := make(chan bool, 1)
+	go func() {
+		c.reconnectingMu.Lock()
+		defer c.reconnectingMu.Unlock()
+		for !c.conn.IsConnected() && !c.closed {
+			// If no reconnect is happening and we're not connected, give up.
+			if !c.reconnecting {
+				done <- false
+				return
+			}
+			c.reconnectCond.Wait()
+		}
+		done <- c.conn.IsConnected() && !c.closed
+	}()
+
+	select {
+	case result := <-done:
+		return result
+	case <-ctx.Done():
+		// Unblock the waiting goroutine by broadcasting; it will re-check and exit.
+		c.reconnectCond.Broadcast()
+		return false
+	}
+}
+
 // SetUnmatchedMessageHandler registers a handler that is called (in a new goroutine)
 // for every message received by the background receiver that does not match any
 // pending outbound request. This enables an Actor to receive inbound ActorRequest
@@ -754,24 +851,41 @@ func (c *Client) notifyPendingCallersConnectionLost() {
 }
 
 // attemptReconnection attempts to reconnect to the gateway with exponential backoff.
+// triggerErr is the error that caused the reconnection attempt (e.g. the receive error
+// from receiveLoop); it is forwarded to the StateReconnecting callback so observers
+// know why the reconnect started. Pass nil when the trigger is unknown.
 // Returns true if reconnection was successful, false otherwise.
-func (c *Client) attemptReconnection() bool {
+// On completion (success or failure) it broadcasts on reconnectCond so that
+// waitForReconnect callers are unblocked.
+func (c *Client) attemptReconnection(triggerErr error) bool {
 	c.reconnectingMu.Lock()
+	if c.closed {
+		c.reconnectingMu.Unlock()
+		return false
+	}
 	if c.reconnecting {
 		c.reconnectingMu.Unlock()
-		// Another goroutine is already reconnecting, wait and check result
-		time.Sleep(100 * time.Millisecond)
-		return c.IsConnected()
+		// Another goroutine is already reconnecting — wait for its result
+		// instead of sleeping a fixed duration.
+		return c.waitForReconnect(c.receiverCtx)
 	}
 	c.reconnecting = true
 	c.reconnectAttempt = 0
 	c.reconnectingMu.Unlock()
 
-	defer func() {
+	c.emitState(StateReconnecting, triggerErr)
+
+	finishReconnect := func(success bool, lastErr error) {
 		c.reconnectingMu.Lock()
 		c.reconnecting = false
+		c.reconnectCond.Broadcast()
 		c.reconnectingMu.Unlock()
-	}()
+		if success {
+			c.emitState(StateConnected, nil)
+		} else {
+			c.emitState(StateReconnectFailed, lastErr)
+		}
+	}
 
 	reconnectCfg := &c.cfg.ReconnectConfig
 	maxRetries := reconnectCfg.MaxRetries
@@ -781,16 +895,23 @@ func (c *Client) attemptReconnection() bool {
 	multiplier := reconnectCfg.GetBackoffMultiplier()
 	maxBackoff := reconnectCfg.GetMaxBackoff()
 
+	var lastErr error
 	for attempt := 1; unlimited || attempt <= maxRetries; attempt++ {
-		// Check if receiver context is cancelled
+		// Check if receiver context is cancelled or client was closed
 		select {
 		case <-c.receiverCtx.Done():
 			c.logger.Info("reconnection cancelled", "actor", c.gatewayActorName, "msg", "context done")
+			finishReconnect(false, c.receiverCtx.Err())
 			return false
 		default:
 		}
 
 		c.reconnectingMu.Lock()
+		if c.closed {
+			c.reconnectingMu.Unlock()
+			finishReconnect(false, errors.New("client closed"))
+			return false
+		}
 		c.reconnectAttempt = attempt
 		c.reconnectingMu.Unlock()
 
@@ -798,12 +919,14 @@ func (c *Client) attemptReconnection() bool {
 
 		// Attempt to reconnect the underlying connection
 		if err := c.conn.Reconnect(); err != nil {
+			lastErr = err
 			c.logger.Warn("reconnection attempt failed", "attempt", attempt, "actor", c.gatewayActorName, "error", err)
 
 			// Wait with exponential backoff before next attempt
 			select {
 			case <-c.receiverCtx.Done():
 				c.logger.Info("reconnection cancelled during backoff", "actor", c.gatewayActorName)
+				finishReconnect(false, c.receiverCtx.Err())
 				return false
 			case <-time.After(backoff):
 			}
@@ -820,6 +943,7 @@ func (c *Client) attemptReconnection() bool {
 		c.logger.Info("connection re-established, re-authenticating", "actor", c.gatewayActorName)
 
 		if err := c.reAuthenticate(); err != nil {
+			lastErr = err
 			c.logger.Error("re-authentication failed", "actor", c.gatewayActorName, "error", err)
 			// Close the connection and try again
 			c.conn.Close()
@@ -827,6 +951,7 @@ func (c *Client) attemptReconnection() bool {
 			// Wait before next attempt
 			select {
 			case <-c.receiverCtx.Done():
+				finishReconnect(false, c.receiverCtx.Err())
 				return false
 			case <-time.After(backoff):
 			}
@@ -839,10 +964,12 @@ func (c *Client) attemptReconnection() bool {
 		}
 
 		c.logger.Info("successfully reconnected and re-authenticated", "actor", c.gatewayActorName)
+		finishReconnect(true, nil)
 		return true
 	}
 
 	c.logger.Warn("max reconnection attempts reached", "actor", c.gatewayActorName)
+	finishReconnect(false, lastErr)
 	return false
 }
 
@@ -1005,9 +1132,18 @@ func (c *Client) sendMessageWithCorrelation(ctx context.Context, msg *message.Me
 		return nil, fmt.Errorf("failed to encode message: %w", err)
 	}
 
-	// Check connection before sending
+	// If connection is down, wait for the receiveLoop's reconnect rather than
+	// failing immediately. This avoids forcing every caller to wrap sends in
+	// their own reconnect logic.
 	if !c.conn.IsConnected() {
-		return nil, fmt.Errorf("connection closed before sending message")
+		if c.cfg.ReconnectConfig.IsEnabled() {
+			c.logger.Info("connection down, waiting for reconnect before send", "actor", c.gatewayActorName, "message_id", messageId)
+			if !c.waitForReconnect(ctx) {
+				return nil, ErrConnectionLost
+			}
+		} else {
+			return nil, fmt.Errorf("connection closed before sending message")
+		}
 	}
 
 	// Send with mutex to prevent interleaved writes
@@ -1060,7 +1196,7 @@ func (c *Client) sendMessageSync(ctx context.Context, msg *message.Message) (*me
 	resp, err := c.doSendMessageSync(ctx, msg)
 	if err != nil && c.cfg.ReconnectConfig.IsEnabled() && isConnectionError(err.Error()) {
 		c.logger.Info("sync send failed with connection error, attempting reconnection", "actor", c.gatewayActorName, "error", err)
-		if c.attemptReconnection() {
+		if c.attemptReconnection(err) {
 			return c.doSendMessageSync(ctx, msg)
 		}
 	}
@@ -1076,9 +1212,15 @@ func (c *Client) doSendMessageSync(ctx context.Context, msg *message.Message) (*
 		return nil, fmt.Errorf("failed to encode message: %w", err)
 	}
 
-	// Check connection before sending
+	// Wait for reconnect if connection is down and reconnect is enabled
 	if !c.conn.IsConnected() {
-		return nil, fmt.Errorf("connection closed before sending message")
+		if c.cfg.ReconnectConfig.IsEnabled() {
+			if !c.waitForReconnect(ctx) {
+				return nil, ErrConnectionLost
+			}
+		} else {
+			return nil, fmt.Errorf("connection closed before sending message")
+		}
 	}
 
 	// Send via connection (with mutex in case someone starts receiver mid-operation)
@@ -1131,7 +1273,7 @@ func (c *Client) sendMessageSyncRaw(ctx context.Context, msg *message.Message) (
 	resp, raw, err := c.doSendMessageSyncRaw(ctx, msg)
 	if err != nil && c.cfg.ReconnectConfig.IsEnabled() && isConnectionError(err.Error()) {
 		c.logger.Info("sync send (raw) failed with connection error, attempting reconnection", "actor", c.gatewayActorName, "error", err)
-		if c.attemptReconnection() {
+		if c.attemptReconnection(err) {
 			return c.doSendMessageSyncRaw(ctx, msg)
 		}
 	}
@@ -1146,7 +1288,13 @@ func (c *Client) doSendMessageSyncRaw(ctx context.Context, msg *message.Message)
 		return nil, nil, fmt.Errorf("failed to encode message: %w", err)
 	}
 	if !c.conn.IsConnected() {
-		return nil, nil, fmt.Errorf("connection closed before sending message")
+		if c.cfg.ReconnectConfig.IsEnabled() {
+			if !c.waitForReconnect(ctx) {
+				return nil, nil, ErrConnectionLost
+			}
+		} else {
+			return nil, nil, fmt.Errorf("connection closed before sending message")
+		}
 	}
 	c.sendMu.Lock()
 	sent, sendErr := c.conn.Send(socketMsg.MessageBytes)
@@ -1200,7 +1348,13 @@ func (c *Client) sendMessageWithCorrelationRaw(ctx context.Context, msg *message
 		return nil, nil, fmt.Errorf("failed to encode message: %w", err)
 	}
 	if !c.conn.IsConnected() {
-		return nil, nil, fmt.Errorf("connection closed before sending message")
+		if c.cfg.ReconnectConfig.IsEnabled() {
+			if !c.waitForReconnect(ctx) {
+				return nil, nil, ErrConnectionLost
+			}
+		} else {
+			return nil, nil, fmt.Errorf("connection closed before sending message")
+		}
 	}
 	c.sendMu.Lock()
 	sent, sendErr := c.conn.Send(socketMsg.MessageBytes)
@@ -1252,7 +1406,14 @@ func isConnectionError(errStr string) bool {
 
 // Close closes the client connection and removes it from the registry.
 // If the background receiver is active, it will be stopped first.
+// After Close returns, the client will never reconnect.
 func (c *Client) Close() error {
+	// Mark as closed so attemptReconnection and waitForReconnect give up.
+	c.reconnectingMu.Lock()
+	c.closed = true
+	c.reconnectCond.Broadcast()
+	c.reconnectingMu.Unlock()
+
 	// Stop receiver if active
 	if c.receiverActive {
 		c.StopReceiver()
