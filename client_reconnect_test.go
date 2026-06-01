@@ -1,114 +1,53 @@
 package podos
 
 import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
 	"testing"
 
 	"github.com/PointOfData/pod-os-go-client/config"
+	gatewayerrors "github.com/PointOfData/pod-os-go-client/errors"
 )
 
-func TestIsConnectionError(t *testing.T) {
-	tests := []struct {
-		name     string
-		errStr   string
-		expected bool
-	}{
-		{
-			name:     "EOF error",
-			errStr:   "EOF",
-			expected: true,
-		},
-		{
-			name:     "EOF error with prefix",
-			errStr:   "couldn't receive data from the server, OriginalError: EOF",
-			expected: true,
-		},
-		{
-			name:     "connection reset error",
-			errStr:   "read: connection reset by peer",
-			expected: true,
-		},
-		{
-			name:     "broken pipe error",
-			errStr:   "write: broken pipe",
-			expected: true,
-		},
-		{
-			name:     "connection refused error",
-			errStr:   "dial tcp 127.0.0.1:8080: connection refused",
-			expected: true,
-		},
-		{
-			name:     "closed network connection",
-			errStr:   "use of closed network connection",
-			expected: true,
-		},
-		{
-			name:     "timeout error is not connection error",
-			errStr:   "i/o timeout",
-			expected: false,
-		},
-		{
-			name:     "deadline exceeded is not connection error",
-			errStr:   "context deadline exceeded",
-			expected: false,
-		},
-		{
-			name:     "other error",
-			errStr:   "some random error",
-			expected: false,
-		},
+// Connection-loss is now classified by typed error codes rather than substring
+// matching. These tests cover the typed classifiers and the public sentinel.
+func TestConnectionLostClassification(t *testing.T) {
+	connLost := gatewayerrors.ErrConnectionLost.Wrap(io.EOF)
+	idle := gatewayerrors.ErrReceiveIdleTimeout.Wrap(context.DeadlineExceeded)
+
+	if !gatewayerrors.IsConnectionLost(connLost) {
+		t.Error("expected wrapped ErrConnectionLost to classify as connection lost")
+	}
+	if gatewayerrors.IsConnectionLost(idle) {
+		t.Error("idle timeout must not classify as connection lost")
+	}
+	if !gatewayerrors.IsIdleTimeout(idle) {
+		t.Error("expected wrapped ErrReceiveIdleTimeout to classify as idle timeout")
+	}
+	if gatewayerrors.IsIdleTimeout(connLost) {
+		t.Error("connection lost must not classify as idle timeout")
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := isConnectionError(tt.errStr)
-			if result != tt.expected {
-				t.Errorf("isConnectionError(%q) = %v, want %v", tt.errStr, result, tt.expected)
-			}
-		})
+	// convertGatewayError must preserve the connection-lost classification so
+	// callers can detect it with errors.Is(err, ErrConnectionLost).
+	converted := convertGatewayError(connLost)
+	if !errors.Is(converted, ErrConnectionLost) {
+		t.Errorf("converted connection-lost error should match ErrConnectionLost, got %v", converted)
 	}
-}
-
-func TestIsTimeoutError(t *testing.T) {
-	tests := []struct {
-		name     string
-		errStr   string
-		expected bool
-	}{
-		{
-			name:     "timeout error",
-			errStr:   "timeout",
-			expected: true,
-		},
-		{
-			name:     "deadline exceeded",
-			errStr:   "context deadline exceeded",
-			expected: true,
-		},
-		{
-			name:     "i/o timeout",
-			errStr:   "i/o timeout",
-			expected: true,
-		},
-		{
-			name:     "EOF is not timeout",
-			errStr:   "EOF",
-			expected: false,
-		},
-		{
-			name:     "connection reset is not timeout",
-			errStr:   "connection reset by peer",
-			expected: false,
-		},
+	if !isFatalConnError(converted) {
+		t.Error("isFatalConnError should report true for a converted connection-lost error")
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := isTimeoutError(tt.errStr)
-			if result != tt.expected {
-				t.Errorf("isTimeoutError(%q) = %v, want %v", tt.errStr, result, tt.expected)
-			}
-		})
+	// A plain application error must not be treated as a connection loss.
+	other := fmt.Errorf("some random error")
+	if isFatalConnError(other) {
+		t.Error("isFatalConnError should report false for a non-connection error")
+	}
+	convertedIdle := convertGatewayError(idle)
+	if errors.Is(convertedIdle, ErrConnectionLost) {
+		t.Error("idle timeout must not convert to ErrConnectionLost")
 	}
 }
 

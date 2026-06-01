@@ -11,6 +11,7 @@ import (
 
 	"github.com/PointOfData/pod-os-go-client/config"
 	"github.com/PointOfData/pod-os-go-client/connection"
+	"github.com/PointOfData/pod-os-go-client/debuglog" // #region agent log
 	gatewayerrors "github.com/PointOfData/pod-os-go-client/errors"
 	"github.com/PointOfData/pod-os-go-client/log"
 	"github.com/PointOfData/pod-os-go-client/message"
@@ -28,6 +29,18 @@ var (
 // ErrConnectionLost is returned when a request fails because the connection
 // to the gateway was lost. Callers can check for this error and retry their request.
 var ErrConnectionLost = errors.New("connection to gateway was lost during request")
+
+const (
+	// receiveLoopTimeout bounds each background receive so the loop stays
+	// responsive to shutdown and can enforce the liveness deadline.
+	receiveLoopTimeout = 30 * time.Second
+	// connectionLivenessTimeout is the liveness backstop: if requests are
+	// pending but no frame has been received for this long, the connection is
+	// declared dead even without a hard TCP error. Sized above receiveLoopTimeout
+	// and the keepalive probe window so it only fires when TCP-level detection
+	// has not already tripped.
+	connectionLivenessTimeout = 90 * time.Second
+)
 
 // ConnectionState represents the current state of a Client's connection.
 type ConnectionState int
@@ -127,6 +140,14 @@ func GetClientCount() int {
 func convertGatewayError(gatewayErr *gatewayerrors.GatewayDError) error {
 	if gatewayErr == nil {
 		return nil
+	}
+	// Preserve the fatal connection-lost classification across the conversion so
+	// callers can detect it with errors.Is(err, ErrConnectionLost) and retry.
+	if gatewayErr.Code == gatewayerrors.ErrCodeConnectionLost {
+		if gatewayErr.OriginalError != nil {
+			return fmt.Errorf("%s: %v: %w", gatewayErr.Message, gatewayErr.OriginalError, ErrConnectionLost)
+		}
+		return fmt.Errorf("%s: %w", gatewayErr.Message, ErrConnectionLost)
 	}
 	if gatewayErr.OriginalError != nil {
 		return fmt.Errorf("%s: %w", gatewayErr.Message, gatewayErr.OriginalError)
@@ -634,7 +655,33 @@ func (c *Client) IsReceiverActive() bool {
 // If a connection error occurs (e.g., gateway restart), it will attempt to reconnect
 // using exponential backoff if reconnection is enabled in the configuration.
 func (c *Client) receiveLoop() {
+	// lastActivity is the last time a full frame was received (or a reconnect
+	// succeeded). It backstops the TCP-level detection: if requests are pending
+	// but no frame arrives for connectionLivenessTimeout, the connection is dead.
+	lastActivity := time.Now()
+	// #region agent log
+	debuglog.Log("H-A", "client.go:receiveLoop", "receiveLoop started BUILD=dead-conn-fix-v2", map[string]any{
+		"actor": c.gatewayActorName, "reconnectEnabled": c.cfg.ReconnectConfig.IsEnabled(),
+	})
+	var dbgLastHB time.Time
+	var dbgLastOutcome string = "none"
+	defer func() {
+		debuglog.Log("H-G", "client.go:receiveLoop.exit", "receiveLoop RETURNED", map[string]any{
+			"pendingCount": c.pendingCount(), "lastOutcome": dbgLastOutcome,
+			"receiverCtxErr": fmt.Sprint(c.receiverCtx.Err()),
+		})
+	}()
+	// #endregion
 	for {
+		// #region agent log
+		if time.Since(dbgLastHB) >= 30*time.Second {
+			debuglog.Log("H-F", "client.go:receiveLoop.hb", "loop alive, about to Receive", map[string]any{
+				"pendingCount": c.pendingCount(), "sinceLastActivityMs": time.Since(lastActivity).Milliseconds(),
+				"connected": c.IsConnected(), "lastOutcome": dbgLastOutcome,
+			})
+			dbgLastHB = time.Now()
+		}
+		// #endregion
 		select {
 		case <-c.receiverCtx.Done():
 			c.logger.Info("receiver context cancelled, exiting loop", "actor", c.gatewayActorName)
@@ -643,11 +690,13 @@ func (c *Client) receiveLoop() {
 			// Continue receiving
 		}
 
-		// Check if still connected
+		// Check if still connected. The transport may have been marked dead by a
+		// concurrent sender's failed write; fail in-flight callers, then reconnect.
 		if !c.IsConnected() {
-			// Attempt reconnection if enabled
+			c.handleConnectionLost(ErrConnectionLost)
 			if c.cfg.ReconnectConfig.IsEnabled() {
 				if c.attemptReconnection(nil) {
+					lastActivity = time.Now()
 					continue
 				}
 			}
@@ -655,47 +704,87 @@ func (c *Client) receiveLoop() {
 			return
 		}
 
-		// Receive with a timeout to allow checking for shutdown
-		// Use 30 second timeout for responsiveness to shutdown signals
-		receiveCtx, cancel := context.WithTimeout(c.receiverCtx, 30*time.Second)
+		// Receive with a timeout to allow checking for shutdown and to enforce
+		// the liveness deadline.
+		receiveCtx, cancel := context.WithTimeout(c.receiverCtx, receiveLoopTimeout)
+		dbgRecvStart := time.Now() // #region agent log #endregion
 		_, responseBytes, receiveErr := c.conn.Receive(receiveCtx)
 		cancel()
+		// #region agent log
+		dbgElapsed := time.Since(dbgRecvStart)
+		if receiveErr != nil {
+			dbgLastOutcome = fmt.Sprintf("err(%dms): %s", dbgElapsed.Milliseconds(), receiveErr.Error())
+		} else {
+			dbgLastOutcome = fmt.Sprintf("ok(%dms,len=%d)", dbgElapsed.Milliseconds(), len(responseBytes))
+		}
+		// A single Receive that blocks far past the receiveLoopTimeout proves the
+		// read deadline is not being enforced on this socket.
+		if dbgElapsed > 2*receiveLoopTimeout {
+			debuglog.Log("H-F", "client.go:receiveLoop.slow", "Receive exceeded 2x timeout", map[string]any{
+				"elapsedMs": dbgElapsed.Milliseconds(), "outcome": dbgLastOutcome,
+				"pendingCount": c.pendingCount(),
+			})
+		}
+		// #endregion
 
 		if receiveErr != nil {
 			// Check if receiver is shutting down
 			if c.receiverCtx.Err() != nil {
 				return
 			}
-			// Check if it's a timeout error (expected when idle)
-			errStr := receiveErr.Error()
-			if isTimeoutError(errStr) {
-				// Timeout is normal when idle, continue loop
-				continue
+
+			// #region agent log
+			isIdle := gatewayerrors.IsIdleTimeout(receiveErr)
+			pc := c.pendingCount()
+			idleMs := time.Since(lastActivity).Milliseconds()
+			if !isIdle || pc > 0 {
+				debuglog.Log("H-B", "client.go:receiveLoop.err", "receive error classified", map[string]any{
+					"isIdleTimeout": isIdle, "isConnLost": gatewayerrors.IsConnectionLost(receiveErr),
+					"pendingCount": pc, "sinceLastActivityMs": idleMs,
+					"livenessThresholdMs": connectionLivenessTimeout.Milliseconds(),
+					"err":                 receiveErr.Error(),
+				})
 			}
+			// #endregion
 
-			// Check if it's a connection error that requires reconnection
-			if isConnectionError(errStr) {
-				c.logger.Error("connection error", "actor", c.gatewayActorName, "error", receiveErr)
-				c.emitState(StateDisconnected, receiveErr)
-
-				// Notify pending callers that connection was lost
-				c.notifyPendingCallersConnectionLost()
-
-				// Attempt reconnection if enabled
-				if c.cfg.ReconnectConfig.IsEnabled() {
-					if c.attemptReconnection(receiveErr) {
-						continue
-					}
+			// Benign idle timeout: no frame was in progress, so the socket is
+			// still considered healthy. Continue UNLESS we have pending requests
+			// and have heard nothing for too long (liveness backstop).
+			if gatewayerrors.IsIdleTimeout(receiveErr) {
+				if c.pendingCount() == 0 || time.Since(lastActivity) <= connectionLivenessTimeout {
+					continue
 				}
-				// Reconnection failed or disabled, exit loop
-				c.logger.Error("connection recovery failed, receiver exiting", "actor", c.gatewayActorName)
-				return
+				c.logger.Error("liveness timeout: pending requests with no frames received; treating connection as dead",
+					"actor", c.gatewayActorName, "idle", time.Since(lastActivity))
+				// #region agent log
+				debuglog.Log("H-D", "client.go:receiveLoop.liveness", "liveness backstop fired -> fatal", map[string]any{
+					"pendingCount": c.pendingCount(), "sinceLastActivityMs": time.Since(lastActivity).Milliseconds(),
+				})
+				// #endregion
+			} else {
+				c.logger.Error("connection error", "actor", c.gatewayActorName, "error", receiveErr)
 			}
 
-			// Log other errors but continue
-			c.logger.Error("receive error", "actor", c.gatewayActorName, "error", receiveErr)
-			continue
+			// #region agent log
+			debuglog.Log("H-C", "client.go:receiveLoop.fatal", "handling fatal -> notify pending + reconnect", map[string]any{
+				"pendingCount": c.pendingCount(), "err": receiveErr.Error(),
+			})
+			// #endregion
+
+			// Fatal: mark down, fail every in-flight caller fast with
+			// ErrConnectionLost, then reconnect.
+			c.handleConnectionLost(receiveErr)
+			if c.cfg.ReconnectConfig.IsEnabled() {
+				if c.attemptReconnection(receiveErr) {
+					lastActivity = time.Now()
+					continue
+				}
+			}
+			c.logger.Error("connection recovery failed, receiver exiting", "actor", c.gatewayActorName)
+			return
 		}
+
+		lastActivity = time.Now()
 
 		if len(responseBytes) == 0 {
 			continue
@@ -828,6 +917,21 @@ func (c *Client) SetUnmatchedMessageHandler(fn func(*message.Message)) {
 	c.unmatchedHandler = fn
 }
 
+// pendingCount returns the number of in-flight requests awaiting a response.
+func (c *Client) pendingCount() int {
+	c.pendingMu.RLock()
+	defer c.pendingMu.RUnlock()
+	return len(c.pending) + len(c.pendingWithRaw)
+}
+
+// handleConnectionLost emits the disconnected state and fails every in-flight
+// caller immediately with ErrConnectionLost so they can retry, rather than
+// blocking until each request's own deadline.
+func (c *Client) handleConnectionLost(err error) {
+	c.emitState(StateDisconnected, err)
+	c.notifyPendingCallersConnectionLost()
+}
+
 // notifyPendingCallersConnectionLost notifies all pending callers that the connection was lost.
 // Callers will receive a nil message, indicating they should retry their request.
 func (c *Client) notifyPendingCallersConnectionLost() {
@@ -880,6 +984,15 @@ func (c *Client) attemptReconnection(triggerErr error) bool {
 		c.reconnecting = false
 		c.reconnectCond.Broadcast()
 		c.reconnectingMu.Unlock()
+		// #region agent log
+		le := ""
+		if lastErr != nil {
+			le = lastErr.Error()
+		}
+		debuglog.Log("H-C", "client.go:attemptReconnection", "reconnect finished", map[string]any{
+			"success": success, "lastErr": le,
+		})
+		// #endregion
 		if success {
 			c.emitState(StateConnected, nil)
 		} else {
@@ -1170,6 +1283,11 @@ func (c *Client) sendMessageWithCorrelation(ctx context.Context, msg *message.Me
 		if !ok {
 			// Channel was closed, connection was lost during request
 			// Return a specific error so caller can decide to retry
+			// #region agent log
+			debuglog.Log("H-C", "client.go:sendMessageWithCorrelation", "responseChan CLOSED -> ErrConnectionLost (recovery path)", map[string]any{
+				"messageId": messageId,
+			})
+			// #endregion
 			return nil, ErrConnectionLost
 		}
 		if response == nil {
@@ -1184,6 +1302,12 @@ func (c *Client) sendMessageWithCorrelation(ctx context.Context, msg *message.Me
 		}
 		return response, nil
 	case <-ctx.Done():
+		// #region agent log
+		debuglog.Log("H-E", "client.go:sendMessageWithCorrelation", "ctx.Done fired -> context deadline (NO detection)", map[string]any{
+			"messageId": messageId, "ctxErr": ctx.Err().Error(),
+			"connected": c.conn.IsConnected(), "pendingCount": c.pendingCount(),
+		})
+		// #endregion
 		return nil, fmt.Errorf("request to %s timed out waiting for response [MessageId: %s]: %w", c.gatewayActorName, messageId, ctx.Err())
 	}
 }
@@ -1194,7 +1318,7 @@ func (c *Client) sendMessageWithCorrelation(ctx context.Context, msg *message.Me
 // reconnect and retry the message once.
 func (c *Client) sendMessageSync(ctx context.Context, msg *message.Message) (*message.Message, error) {
 	resp, err := c.doSendMessageSync(ctx, msg)
-	if err != nil && c.cfg.ReconnectConfig.IsEnabled() && isConnectionError(err.Error()) {
+	if err != nil && c.cfg.ReconnectConfig.IsEnabled() && isFatalConnError(err) {
 		c.logger.Info("sync send failed with connection error, attempting reconnection", "actor", c.gatewayActorName, "error", err)
 		if c.attemptReconnection(err) {
 			return c.doSendMessageSync(ctx, msg)
@@ -1271,7 +1395,7 @@ func (c *Client) doSendMessageSync(ctx context.Context, msg *message.Message) (*
 // reconnect and retry the message once.
 func (c *Client) sendMessageSyncRaw(ctx context.Context, msg *message.Message) (*message.Message, []byte, error) {
 	resp, raw, err := c.doSendMessageSyncRaw(ctx, msg)
-	if err != nil && c.cfg.ReconnectConfig.IsEnabled() && isConnectionError(err.Error()) {
+	if err != nil && c.cfg.ReconnectConfig.IsEnabled() && isFatalConnError(err) {
 		c.logger.Info("sync send (raw) failed with connection error, attempting reconnection", "actor", c.gatewayActorName, "error", err)
 		if c.attemptReconnection(err) {
 			return c.doSendMessageSyncRaw(ctx, msg)
@@ -1387,21 +1511,11 @@ func (c *Client) sendMessageWithCorrelationRaw(ctx context.Context, msg *message
 	}
 }
 
-// isTimeoutError checks if an error string indicates a timeout
-func isTimeoutError(errStr string) bool {
-	return strings.Contains(errStr, "timeout") ||
-		strings.Contains(errStr, "deadline exceeded") ||
-		strings.Contains(errStr, "i/o timeout")
-}
-
-// isConnectionError checks if an error string indicates a connection loss
-// that may be recoverable through reconnection (e.g., gateway restart).
-func isConnectionError(errStr string) bool {
-	return strings.Contains(errStr, "EOF") ||
-		strings.Contains(errStr, "connection reset") ||
-		strings.Contains(errStr, "broken pipe") ||
-		strings.Contains(errStr, "connection refused") ||
-		strings.Contains(errStr, "use of closed network connection")
+// isFatalConnError reports whether a transport-layer error signals a dead
+// connection that requires reconnection. Classification is typed (the transport
+// tags fatal conditions with ErrCodeConnectionLost) rather than string-matching.
+func isFatalConnError(err error) bool {
+	return gatewayerrors.IsConnectionLost(err) || errors.Is(err, ErrConnectionLost)
 }
 
 // Close closes the client connection and removes it from the registry.

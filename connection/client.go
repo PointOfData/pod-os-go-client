@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/PointOfData/pod-os-go-client/debuglog" // #region agent log
 	"github.com/PointOfData/pod-os-go-client/errors"
 	"github.com/PointOfData/pod-os-go-client/log"
 )
@@ -119,6 +120,50 @@ type Client struct {
 
 var _ IClient = (*Client)(nil)
 
+// Aggressive keepalive defaults so a dead/half-open peer surfaces as a hard read
+// error within ~30s (Idle 15s, then up to Count probes Interval apart), plus a
+// matching TCP_USER_TIMEOUT so unacknowledged writes fail fast on Linux.
+const (
+	keepAliveIdle     = 15 * time.Second
+	keepAliveInterval = 5 * time.Second
+	keepAliveCount    = 3
+	tcpUserTimeoutMS  = 60000 // 60s
+)
+
+// applyTCPOptions sets TCP_NODELAY, aggressive keepalive, and TCP_USER_TIMEOUT
+// on a freshly dialed connection. Errors are logged but non-fatal.
+func (c *Client) applyTCPOptions() {
+	tcpConn, ok := c.Conn.(*net.TCPConn)
+	if !ok {
+		return
+	}
+	if err := tcpConn.SetNoDelay(true); err != nil {
+		c.logger.Warn("failed to set TCP_NODELAY", "error", err)
+	}
+	kaCfg := net.KeepAliveConfig{
+		Enable:   true,
+		Idle:     keepAliveIdle,
+		Interval: keepAliveInterval,
+		Count:    keepAliveCount,
+	}
+	if err := tcpConn.SetKeepAliveConfig(kaCfg); err != nil {
+		c.logger.Warn("failed to set keepalive config", "error", err)
+		// Fall back to the coarse single-knob keepalive.
+		_ = tcpConn.SetKeepAlive(true)
+		_ = tcpConn.SetKeepAlivePeriod(keepAliveIdle)
+	}
+	if err := setTCPUserTimeout(c.Conn, tcpUserTimeoutMS); err != nil {
+		c.logger.Warn("failed to set TCP_USER_TIMEOUT", "error", err)
+	}
+}
+
+// markDisconnected flags the transport as dead so senders stop writing into a
+// dead socket and the receive loop triggers reconnection. Called on every fatal
+// I/O or framing error, not only on explicit Close/Reconnect.
+func (c *Client) markDisconnected() {
+	c.connected.Store(false)
+}
+
 // NewClient creates a new client.
 func NewClient(ctx context.Context, cfg ClientConfig, network string, host string, port string, actorName string, retry *Retry) *Client {
 	var tracer Tracer = NoOpTracer{}
@@ -160,8 +205,8 @@ func NewClient(ctx context.Context, cfg ClientConfig, network string, host strin
 		ctx:         clientCtx,
 		mu:          sync.Mutex{},
 		retry:       retry,
-		tracer:      tracer,    // Preserve tracer that was set earlier
-		logger:      logger,    // Preserve logger — must not be dropped here
+		tracer:      tracer, // Preserve tracer that was set earlier
+		logger:      logger, // Preserve logger — must not be dropped here
 		wireHook:    cfg.WireHook,
 		Network:     network,
 		Host:        host,
@@ -195,25 +240,10 @@ func NewClient(ctx context.Context, cfg ClientConfig, network string, host strin
 
 	client.connected.Store(true)
 
-	// Set TCP keep alive (enabled by default for faster dead-connection detection).
+	// Aggressive keepalive + TCP_USER_TIMEOUT for fast dead-connection detection.
 	client.TCPKeepAlive = true
-	client.TCPKeepAlivePeriod = 30 * time.Second
-
-	if c, ok := client.Conn.(*net.TCPConn); ok {
-		if err := c.SetNoDelay(true); err != nil {
-			logger.Warn("failed to set TCP_NODELAY", "error", err)
-			span.RecordError(err)
-		}
-		if err := c.SetKeepAlive(client.TCPKeepAlive); err != nil {
-			logger.Warn("failed to set keep alive", "error", err)
-			span.RecordError(err)
-		} else {
-			if err := c.SetKeepAlivePeriod(client.TCPKeepAlivePeriod); err != nil {
-				logger.Warn("failed to set keep alive period", "error", err)
-				span.RecordError(err)
-			}
-		}
-	}
+	client.TCPKeepAlivePeriod = keepAliveIdle
+	client.applyTCPOptions()
 
 	// Set timeouts to avoid indefinite blocking on IO
 	// Use config values or defaults
@@ -298,10 +328,13 @@ func (c *Client) Send(data []byte) (int, *errors.GatewayDError) {
 		// Write only the remaining bytes
 		written, err := c.Conn.Write(data[sent:])
 		if err != nil {
-			// Log the error but don't panic - return error for caller to handle
+			// A write failure means the socket is dead (RST, broken pipe, or
+			// TCP_USER_TIMEOUT). Mark disconnected so senders stop and the
+			// receive loop reconnects, and surface a fatal connection-lost error.
 			c.logger.Error("failed to send data", "error", err)
 			span.RecordError(err)
-			return sent, errors.ErrClientSendFailed.Wrap(err)
+			c.markDisconnected()
+			return sent, errors.ErrConnectionLost.Wrap(err)
 		}
 
 		// Guard against infinite loop if Write returns 0 with no error
@@ -311,7 +344,8 @@ func (c *Client) Send(data []byte) (int, *errors.GatewayDError) {
 				err := fmt.Errorf("write returned 0 bytes %d times consecutively", maxZeroWrites)
 				c.logger.Error("unexpected write behavior", "error", err)
 				span.RecordError(err)
-				return sent, errors.ErrClientSendFailed.Wrap(err)
+				c.markDisconnected()
+				return sent, errors.ErrConnectionLost.Wrap(err)
 			}
 			continue
 		}
@@ -391,7 +425,13 @@ func (c *Client) Receive(ctx context.Context) (int, []byte, *errors.GatewayDErro
 		// Check if context has expired before attempting to read
 		if ctx.Err() != nil {
 			span.RecordError(ctx.Err())
-			return totalRead, nil, errors.ErrClientReceiveFailed.Wrap(fmt.Errorf("context expired before attempting to read length prefix: %w", ctx.Err()))
+			// No frame bytes consumed yet -> benign idle timeout (still alive).
+			// Otherwise the stream is mid-frame and now desynced -> fatal.
+			if totalRead == 0 {
+				return totalRead, nil, errors.ErrReceiveIdleTimeout.Wrap(ctx.Err())
+			}
+			c.markDisconnected()
+			return totalRead, nil, errors.ErrConnectionLost.Wrap(fmt.Errorf("context expired mid-frame reading length prefix: %w", ctx.Err()))
 		}
 
 		// Calculate read deadline from context timeout
@@ -405,7 +445,11 @@ func (c *Client) Receive(ctx context.Context) (int, []byte, *errors.GatewayDErro
 			timeUntilDeadline := time.Until(deadline)
 			if timeUntilDeadline <= 0 {
 				span.RecordError(ctx.Err())
-				return totalRead, nil, errors.ErrClientReceiveFailed.Wrap(fmt.Errorf("receive timeout: %w", ctx.Err()))
+				if totalRead == 0 {
+					return totalRead, nil, errors.ErrReceiveIdleTimeout.Wrap(ctx.Err())
+				}
+				c.markDisconnected()
+				return totalRead, nil, errors.ErrConnectionLost.Wrap(fmt.Errorf("receive timeout mid-frame: %w", ctx.Err()))
 			}
 			// Use the full remaining time for the initial length prefix read
 			readDeadline = deadline
@@ -430,43 +474,62 @@ func (c *Client) Receive(ctx context.Context) (int, []byte, *errors.GatewayDErro
 			// Continue anyway
 		}
 
+		// #region agent log
+		dbgReadStart := time.Now()
+		dbgWantMs := time.Until(readDeadline).Milliseconds()
+		// #endregion
 		read, err := c.Conn.Read(lengthPrefix[totalRead:])
+		// #region agent log
+		// If a single blocking Read returns much later than the deadline we set,
+		// SetReadDeadline is not being honored on this socket (root-cause probe).
+		if dbgReadEl := time.Since(dbgReadStart); dbgReadEl > 45*time.Second {
+			errStr := "nil"
+			if err != nil {
+				errStr = err.Error()
+			}
+			debuglog.Log("H-F", "connection/client.go:Receive.prefixRead", "blocking Read returned very late", map[string]any{
+				"readElapsedMs": dbgReadEl.Milliseconds(), "deadlineWantMs": dbgWantMs,
+				"read": read, "totalRead": totalRead, "err": errStr,
+			})
+		}
+		// #endregion
+		if read > 0 {
+			totalRead += read
+		}
 		if err != nil {
-			// Check if context expired
-			if ctx.Err() != nil {
-				span.RecordError(ctx.Err())
-				return totalRead, nil, errors.ErrClientReceiveFailed.Wrap(fmt.Errorf("receive timeout: %w", ctx.Err()))
+			// A timeout before any frame byte arrived is a benign idle read.
+			// Once any prefix byte has been consumed, a timeout means the stream
+			// is mid-frame and now permanently desynced -> fatal.
+			netErr, isNet := err.(net.Error)
+			isTimeout := (isNet && netErr.Timeout()) || ctx.Err() != nil
+			if isTimeout && totalRead == 0 {
+				span.RecordError(err)
+				return totalRead, nil, errors.ErrReceiveIdleTimeout.Wrap(err)
 			}
-			// Handle timeout errors - if context hasn't expired, continue reading
-			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-				// Check if we still have time in the context
-				if ctx.Err() == nil {
-					// Context hasn't expired, continue reading with a fresh deadline
-					if c.logger.Enabled(log.LevelDebug) {
-						c.logger.Debug("read timeout on length prefix, context still valid")
-					}
-					continue
-				}
-			}
+			// Any other read error (RST/EOF/reset), or a mid-frame timeout, is
+			// fatal: mark the socket dead so the receive loop reconnects.
 			c.logger.Error("failed to read length prefix", "host", c.Host, "error", err)
 			span.RecordError(err)
-			return totalRead, nil, errors.ErrClientReceiveFailed.Wrap(err)
+			c.markDisconnected()
+			return totalRead, nil, errors.ErrConnectionLost.Wrap(err)
 		}
-		totalRead += read
 	}
 	if totalRead < 9 {
-		span.RecordError(errors.ErrClientReceiveFailed)
-		return totalRead, nil, errors.ErrClientReceiveFailed.Wrap(fmt.Errorf("could not read complete length prefix"))
+		span.RecordError(errors.ErrConnectionLost)
+		c.markDisconnected()
+		return totalRead, nil, errors.ErrConnectionLost.Wrap(fmt.Errorf("could not read complete length prefix"))
 	}
 
 	// Validate that we're reading a valid length prefix before parsing
 	// This helps detect when the connection is out of sync
 	if !isValidLengthPrefix(lengthPrefix) {
-		// Connection appears to be out of sync - we're reading from the wrong position
+		// Connection is out of sync - we cannot resync a framed stream, so treat
+		// this as a fatal connection error and force a reconnect.
 		prefixStr := string(lengthPrefix)
 		c.logger.Error("connection out of sync", "prefix", prefixStr, "msg", "invalid length prefix - previous message may not have been fully consumed")
 		span.RecordError(fmt.Errorf("connection out of sync: invalid length prefix"))
-		return totalRead, nil, errors.ErrClientReceiveFailed.Wrap(fmt.Errorf("connection out of sync: expected message length prefix but received %q - this usually indicates the previous message wasn't fully consumed or the connection buffer has leftover data", prefixStr))
+		c.markDisconnected()
+		return totalRead, nil, errors.ErrConnectionLost.Wrap(fmt.Errorf("connection out of sync: expected message length prefix but received %q - this usually indicates the previous message wasn't fully consumed or the connection buffer has leftover data", prefixStr))
 	}
 
 	// Decode the total message length
@@ -481,7 +544,8 @@ func (c *Client) Receive(ctx context.Context) (int, []byte, *errors.GatewayDErro
 		totalMessageLength, err = strconv.ParseInt(hexDigits, 16, 32)
 		if err != nil {
 			span.RecordError(err)
-			return totalRead, nil, errors.ErrClientReceiveFailed.Wrap(fmt.Errorf("failed to parse hex message length from %q: %w", hexDigits, err))
+			c.markDisconnected()
+			return totalRead, nil, errors.ErrConnectionLost.Wrap(fmt.Errorf("failed to parse hex message length from %q: %w", hexDigits, err))
 		}
 	} else {
 		// Decimal format: 9 decimal digits (bytes 0-8)
@@ -490,15 +554,17 @@ func (c *Client) Receive(ctx context.Context) (int, []byte, *errors.GatewayDErro
 		totalMessageLength, err = strconv.ParseInt(decimalDigits, 10, 32)
 		if err != nil {
 			span.RecordError(err)
-			return totalRead, nil, errors.ErrClientReceiveFailed.Wrap(fmt.Errorf("failed to parse decimal message length from %q: %w", decimalDigits, err))
+			c.markDisconnected()
+			return totalRead, nil, errors.ErrConnectionLost.Wrap(fmt.Errorf("failed to parse decimal message length from %q: %w", decimalDigits, err))
 		}
 	}
 
 	// Now read the remaining bytes (totalMessageLength includes the 9-byte length prefix)
 	remainingBytes := int(totalMessageLength) - 9
 	if remainingBytes < 0 {
-		span.RecordError(errors.ErrClientReceiveFailed)
-		return totalRead, nil, errors.ErrClientReceiveFailed.Wrap(fmt.Errorf("invalid message length: %d", totalMessageLength))
+		span.RecordError(errors.ErrConnectionLost)
+		c.markDisconnected()
+		return totalRead, nil, errors.ErrConnectionLost.Wrap(fmt.Errorf("invalid message length: %d", totalMessageLength))
 	}
 
 	buffer := bytes.NewBuffer(lengthPrefix) // Start with the length prefix we already read
@@ -549,17 +615,21 @@ func (c *Client) Receive(ctx context.Context) (int, []byte, *errors.GatewayDErro
 	// Read the remaining bytes in chunks
 	// Respect context timeout - if context expires, abort immediately
 	for remainingBytes > 0 {
-		// Check if context has expired before attempting to read
+		// Mid-frame: a context expiry here means the response stalled and the
+		// stream is now desynced -> fatal.
 		if ctx.Err() != nil {
 			span.RecordError(ctx.Err())
-			return totalRead, buffer.Bytes(), errors.ErrClientReceiveFailed.Wrap(fmt.Errorf("receive timeout: %w", ctx.Err()))
+			c.markDisconnected()
+			return totalRead, buffer.Bytes(), errors.ErrConnectionLost.Wrap(fmt.Errorf("receive timeout mid-frame: %w", ctx.Err()))
 		}
 
-		// Check activity timeout: if we haven't received data for too long, timeout
+		// Check activity timeout: if we haven't received data for too long, the
+		// peer is dead mid-frame -> fatal.
 		timeSinceLastActivity := time.Since(lastActivityTime)
 		if timeSinceLastActivity > activityTimeout {
 			span.RecordError(fmt.Errorf("activity timeout: no data received for %v", timeSinceLastActivity))
-			return totalRead, buffer.Bytes(), errors.ErrClientReceiveFailed.Wrap(fmt.Errorf("activity timeout: no data received for %v (expected transfer rate not met, remaining bytes: %d)", timeSinceLastActivity, remainingBytes))
+			c.markDisconnected()
+			return totalRead, buffer.Bytes(), errors.ErrConnectionLost.Wrap(fmt.Errorf("activity timeout: no data received for %v (expected transfer rate not met, remaining bytes: %d)", timeSinceLastActivity, remainingBytes))
 		}
 
 		// Calculate read deadline from context timeout
@@ -570,7 +640,8 @@ func (c *Client) Receive(ctx context.Context) (int, []byte, *errors.GatewayDErro
 			timeUntilDeadline := time.Until(deadline)
 			if timeUntilDeadline <= 0 {
 				span.RecordError(ctx.Err())
-				return totalRead, buffer.Bytes(), errors.ErrClientReceiveFailed.Wrap(fmt.Errorf("receive timeout: %w", ctx.Err()))
+				c.markDisconnected()
+				return totalRead, buffer.Bytes(), errors.ErrConnectionLost.Wrap(fmt.Errorf("receive timeout mid-frame: %w", ctx.Err()))
 			}
 			// Use a per-read timeout that's smaller than the context deadline
 			// For large responses, allow longer per-read timeouts (up to 60 seconds)
@@ -617,42 +688,45 @@ func (c *Client) Receive(ctx context.Context) (int, []byte, *errors.GatewayDErro
 			lastActivityTime = time.Now() // Update activity time when we receive data
 		}
 		if err != nil {
-			// Check if context expired first
+			// Mid-frame context expiry -> fatal (stream desynced).
 			if ctx.Err() != nil {
 				span.RecordError(ctx.Err())
-				return totalRead, buffer.Bytes(), errors.ErrClientReceiveFailed.Wrap(fmt.Errorf("receive timeout: %w", ctx.Err()))
+				c.markDisconnected()
+				return totalRead, buffer.Bytes(), errors.ErrConnectionLost.Wrap(fmt.Errorf("receive timeout mid-frame: %w", ctx.Err()))
 			}
 			if err == io.EOF && remainingBytes == 0 {
 				// Successfully read all bytes
 				break
 			}
-			// Handle timeout errors - if context hasn't expired, continue reading
-			// This allows for slow network transfers on large responses
+			// A per-read timeout while data is still flowing is OK for slow, large
+			// responses: keep reading with a fresh deadline as long as the overall
+			// context is valid and the activity timeout has not been exceeded.
 			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-				// Check if we still have time in the context
 				if ctx.Err() == nil {
-					// Check activity timeout before continuing
 					timeSinceLastActivity := time.Since(lastActivityTime)
 					if timeSinceLastActivity > activityTimeout {
 						span.RecordError(fmt.Errorf("activity timeout: no data received for %v", timeSinceLastActivity))
-						return totalRead, buffer.Bytes(), errors.ErrClientReceiveFailed.Wrap(fmt.Errorf("activity timeout: no data received for %v (expected transfer rate not met, remaining bytes: %d)", timeSinceLastActivity, remainingBytes))
+						c.markDisconnected()
+						return totalRead, buffer.Bytes(), errors.ErrConnectionLost.Wrap(fmt.Errorf("activity timeout: no data received for %v (expected transfer rate not met, remaining bytes: %d)", timeSinceLastActivity, remainingBytes))
 					}
-					// Context hasn't expired and activity timeout hasn't been exceeded, continue reading with a fresh deadline
 					if c.logger.Enabled(log.LevelDebug) {
 						c.logger.Debug("read timeout on chunk, continuing", "remaining_bytes", remainingBytes)
 					}
 					continue
 				}
 			}
+			// Any other read error (RST/EOF/reset) mid-frame is fatal.
 			c.logger.Error("failed to receive data", "host", c.Host, "error", err)
 			span.RecordError(err)
-			return totalRead, buffer.Bytes(), errors.ErrClientReceiveFailed.Wrap(err)
+			c.markDisconnected()
+			return totalRead, buffer.Bytes(), errors.ErrConnectionLost.Wrap(err)
 		}
 	}
 
 	if remainingBytes > 0 {
-		span.RecordError(errors.ErrClientReceiveFailed)
-		return totalRead, buffer.Bytes(), errors.ErrClientReceiveFailed.Wrap(fmt.Errorf("incomplete message: expected %d bytes, got %d", int(totalMessageLength), totalRead))
+		span.RecordError(errors.ErrConnectionLost)
+		c.markDisconnected()
+		return totalRead, buffer.Bytes(), errors.ErrConnectionLost.Wrap(fmt.Errorf("incomplete message: expected %d bytes, got %d", int(totalMessageLength), totalRead))
 	}
 
 	if c.wireHook != nil {
@@ -713,13 +787,7 @@ func (c *Client) Reconnect() error {
 	c.connected.Store(true)
 
 	// Re-apply TCP settings after reconnection
-	if tcpConn, ok := c.Conn.(*net.TCPConn); ok {
-		_ = tcpConn.SetNoDelay(true)
-		_ = tcpConn.SetKeepAlive(c.TCPKeepAlive)
-		if c.TCPKeepAlive {
-			_ = tcpConn.SetKeepAlivePeriod(c.TCPKeepAlivePeriod)
-		}
-	}
+	c.applyTCPOptions()
 
 	c.logger.Info("reconnected to server", "addr", net.JoinHostPort(c.Host, c.Port), "actor", c.ActorName)
 	span.AddEvent("Reconnected to server")

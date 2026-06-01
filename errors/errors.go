@@ -97,6 +97,13 @@ const (
 	ErrCodeLoadBalancerStrategyNotFound
 	ErrCodeNoProxiesAvailable
 	ErrCodeNoLoadBalancerRules
+	// ErrCodeConnectionLost marks a fatal, unrecoverable-on-this-socket condition
+	// (hard I/O error, mid-frame read timeout, or framing desync). The transport
+	// has been marked disconnected and the caller should reconnect/retry.
+	ErrCodeConnectionLost
+	// ErrCodeReceiveIdleTimeout marks a benign idle read timeout where no bytes of
+	// a frame had been consumed. The connection is still considered healthy.
+	ErrCodeReceiveIdleTimeout
 )
 
 var (
@@ -250,6 +257,41 @@ var (
 		ErrCodeNoLoadBalancerRules, "No load balancer rules provided.", nil,
 	}
 
+	// ErrConnectionLost is a fatal transport error: the socket is dead and must be
+	// reconnected. Returned for hard I/O errors, mid-frame read timeouts, and
+	// framing desync. Detect with IsConnectionLost.
+	ErrConnectionLost = &GatewayDError{
+		ErrCodeConnectionLost, "connection lost", nil,
+	}
+	// ErrReceiveIdleTimeout is a benign read timeout: no frame bytes were pending,
+	// so the connection is still considered alive. Detect with IsIdleTimeout.
+	ErrReceiveIdleTimeout = &GatewayDError{
+		ErrCodeReceiveIdleTimeout, "receive idle timeout", nil,
+	}
+
 	// Unwrapped errors.
 	ErrLoggerRequired = errors.New("terminate action requires a logger parameter")
 )
+
+// codeOf extracts the ErrCode from any error in the chain that is a *GatewayDError.
+func codeOf(err error) (ErrCode, bool) {
+	var ge *GatewayDError
+	if errors.As(err, &ge) && ge != nil {
+		return ge.Code, true
+	}
+	return ErrCodeUnknown, false
+}
+
+// IsConnectionLost reports whether err (or any wrapped error) is a fatal
+// connection-lost transport error.
+func IsConnectionLost(err error) bool {
+	code, ok := codeOf(err)
+	return ok && code == ErrCodeConnectionLost
+}
+
+// IsIdleTimeout reports whether err (or any wrapped error) is a benign idle
+// receive timeout (the connection is still healthy).
+func IsIdleTimeout(err error) bool {
+	code, ok := codeOf(err)
+	return ok && code == ErrCodeReceiveIdleTimeout
+}

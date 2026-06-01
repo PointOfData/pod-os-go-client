@@ -318,6 +318,88 @@ func TestClose_SetsClosedFlag(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Server reset — full receiveLoop integration
+// ---------------------------------------------------------------------------
+
+// TestServerReset_ReceiveLoopEmitsDisconnected verifies that when a remote
+// server issues a TCP RST (connection reset by peer), the receiveLoop detects
+// the fatal error, calls handleConnectionLost, and emits StateDisconnected
+// through the state observer callback.
+func TestServerReset_ReceiveLoopEmitsDisconnected(t *testing.T) {
+	accepted := make(chan net.Conn, 1)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			accepted <- c
+		}
+	}()
+
+	addr := ln.Addr().(*net.TCPAddr)
+	retry := connection.NewRetry(connection.Retry{Retries: 0})
+	cc := connection.NewClient(
+		context.Background(),
+		connection.ClientConfig{
+			Logger:         log.NoOpLogger{},
+			ReceiveTimeout: 500 * time.Millisecond,
+		},
+		"tcp", "127.0.0.1", fmt.Sprintf("%d", addr.Port),
+		"test-actor", retry,
+	)
+	if cc == nil {
+		t.Fatal("connection.NewClient returned nil")
+	}
+
+	c := newTestClient(t, cc)
+	c.cfg.ReceiveTimeout = 500 * time.Millisecond
+
+	stateCh := make(chan ConnectionState, 10)
+	c.OnConnectionStateChange(func(state ConnectionState, _ error) {
+		stateCh <- state
+	})
+
+	c.sendMu.Lock()
+	c.receiverActive = true
+	c.sendMu.Unlock()
+	c.receiverWg.Add(1)
+	go func() {
+		defer c.receiverWg.Done()
+		c.receiveLoop()
+	}()
+
+	// Wait for the server-side connection, then RST it.
+	select {
+	case serverConn := <-accepted:
+		if tcp, ok := serverConn.(*net.TCPConn); ok {
+			_ = tcp.SetLinger(0) // force RST on close
+		}
+		serverConn.Close()
+	case <-time.After(2 * time.Second):
+		t.Fatal("server never accepted a connection")
+	}
+
+	// The receiveLoop should detect the RST and emit StateDisconnected.
+	select {
+	case state := <-stateCh:
+		if state != StateDisconnected {
+			t.Errorf("first state emission = %v, want StateDisconnected", state)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for StateDisconnected after server reset")
+	}
+
+	c.Close()
+}
+
 func TestClose_UnblocksWaiters(t *testing.T) {
 	cc, cleanup := newTestConnClient(t)
 	defer cleanup()
