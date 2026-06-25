@@ -13,7 +13,7 @@ type Config struct {
 	Network          string // "tcp", "udp", "unix"
 	Host             string
 	Port             string
-	GatewayActorName string // Name of the gateway Actor. E.g. "zeroth.pod-os.com"
+	GatewayActorName string // Connection gateway FQN (socket identity). E.g. "zeroth.pod-os.com". Used for GatewayId/StreamOn and From addresses—not the To routing domain when peer-routing.
 
 	// Client identification (for ID message)
 	ClientName string // Name of the client connecting to the Actor (required for ID message)

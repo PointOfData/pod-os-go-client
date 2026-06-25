@@ -305,8 +305,6 @@ Returns `nil` immediately if `!validationEnabled`. Otherwise returns all violati
 - Event.Payload non-nil; Event.Payload of type `NeuralMemory.Tags` REQUIRED
 `TagList`
 - `Tag.Frequency`, `Tag.Key`, `Tag.Value` mapped to `freq=key=value\n`
-- `Tag.Owner` mapped to tag owner OPTIONAL
-- `Tag.OwnerUniqueID` mapped to tag owner unique identifier OPTIONAL
 
 **StoreBatchTagsResponse**
 {Intent}

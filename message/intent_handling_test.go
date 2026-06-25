@@ -589,6 +589,21 @@ func TestFormatBatchLinkEventsPayload(t *testing.T) {
 	}
 }
 
+func TestFormatBatchLinkEventsPayload_ZeroStrengthB(t *testing.T) {
+	payload := FormatBatchLinkEventsPayload([]BatchLinkEventSpec{{
+		Event: EventFields{OwnerUniqueID: "art_a", Timestamp: "+1", Location: "WIKI|en", LocationSeparator: "|"},
+		Link: LinkFields{
+			UniqueIdA: "art_a", UniqueIdB: "art_b",
+			StrengthA: 0.8, StrengthB: 0, Category: "wiki_link",
+			Timestamp: "+1", Location: "WIKI|en", LocationSeparator: "|",
+			OwnerUniqueID: "art_a",
+		},
+	}})
+	if !strings.Contains(payload, "strength_b=0") {
+		t.Errorf("FormatBatchLinkEventsPayload() missing strength_b=0 in payload: %s", payload)
+	}
+}
+
 // =============================================================================
 // RESPONSE DECODING TESTS
 // =============================================================================

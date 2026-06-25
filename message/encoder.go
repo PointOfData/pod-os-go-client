@@ -177,7 +177,7 @@ func formatBatchLinkEventSpecFields(spec BatchLinkEventSpec) []string {
 		if socketName == "" {
 			continue
 		}
-		if value.IsZero() {
+		if value.IsZero() && socketName != "strength_a" && socketName != "strength_b" {
 			continue
 		}
 		fieldValue := formatFieldValue(field.Type, value.Interface())

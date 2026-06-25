@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"strings"
 	"sync"
 	"time"
 
@@ -505,21 +504,7 @@ func NewClient(ctx context.Context, cfg config.Config) (*Client, error) {
 // uses MessageId correlation to route responses to the correct caller, allowing
 // multiple goroutines to send messages simultaneously.
 func (c *Client) SendMessage(ctx context.Context, msg *message.Message) (*message.Message, error) {
-	// Auto-update ClientName to match this client's identity
-	if msg.ClientName != c.clientName {
-		c.logger.Info("updating message ClientName", "from", msg.ClientName, "to", c.clientName)
-		msg.ClientName = c.clientName
-	}
-
-	// Auto-update From address to use this client's ClientName
-	if msg.From != "" && strings.Contains(msg.From, "@") {
-		parts := strings.Split(msg.From, "@")
-		expectedFrom := c.clientName + "@" + parts[1]
-		if msg.From != expectedFrom {
-			c.logger.Info("updating message From", "from", msg.From, "to", expectedFrom)
-			msg.From = expectedFrom
-		}
-	}
+	c.normalizeMessageFrom(msg)
 
 	// Ensure MessageId exists for potential correlation
 	if msg.MessageId == "" {
@@ -536,16 +521,7 @@ func (c *Client) SendMessage(ctx context.Context, msg *message.Message) (*messag
 // SendMessageWithRaw sends a message and returns both the decoded response and the raw wire bytes.
 // Use this when the caller needs to display or log the undecoded server response (e.g. for a "Raw" tab).
 func (c *Client) SendMessageWithRaw(ctx context.Context, msg *message.Message) (*message.Message, []byte, error) {
-	if msg.ClientName != c.clientName {
-		msg.ClientName = c.clientName
-	}
-	if msg.From != "" && strings.Contains(msg.From, "@") {
-		parts := strings.Split(msg.From, "@")
-		expectedFrom := c.clientName + "@" + parts[1]
-		if msg.From != expectedFrom {
-			msg.From = expectedFrom
-		}
-	}
+	c.normalizeMessageFrom(msg)
 	if msg.MessageId == "" {
 		msg.MessageId = uuid.New().String()
 	}
@@ -1586,9 +1562,31 @@ func (c *Client) ClientName() string {
 	return c.clientName
 }
 
-// ActorName returns the ActorName (gateway.domain_name) for this connection.
+// ActorName returns the connection gateway FQN (gateway.domain) for this client.
 func (c *Client) ActorName() string {
 	return c.gatewayActorName
+}
+
+// FromAddress returns the sender routing identity for messages sent on this
+// connection: "<clientName>@<connectionGatewayFQN>".
+func (c *Client) FromAddress() string {
+	return c.clientName + "@" + c.gatewayActorName
+}
+
+// normalizeMessageFrom ensures ClientName and From use this connection's identity.
+// From always uses the connection gateway, not the routing target in To.
+func (c *Client) normalizeMessageFrom(msg *message.Message) {
+	if msg.ClientName != c.clientName {
+		c.logger.Info("updating message ClientName", "from", msg.ClientName, "to", c.clientName)
+		msg.ClientName = c.clientName
+	}
+	expectedFrom := c.FromAddress()
+	if msg.From != expectedFrom {
+		if msg.From != "" {
+			c.logger.Info("updating message From", "from", msg.From, "to", expectedFrom)
+		}
+		msg.From = expectedFrom
+	}
 }
 
 // Conn returns the underlying connection.Client for direct socket operations.
