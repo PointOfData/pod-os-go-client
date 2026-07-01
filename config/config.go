@@ -5,6 +5,7 @@ import (
 
 	"github.com/PointOfData/pod-os-go-client/connection"
 	"github.com/PointOfData/pod-os-go-client/log"
+	"github.com/PointOfData/pod-os-go-client/message"
 )
 
 // Config holds configuration for a Pod-OS client
@@ -45,9 +46,18 @@ type Config struct {
 	// If not set, ReceiveTimeout is used. Only applies when EnableConcurrentMode is true.
 	ResponseTimeout time.Duration
 
+	// UnmatchedMessageHandler is invoked for inbound messages that do not match a pending
+	// outbound request when EnableConcurrentMode is true. Wired before StartReceiver in NewClient.
+	UnmatchedMessageHandler func(*message.Message)
+
 	// Reconnection settings for automatic recovery when gateway restarts or connection is lost.
 	// ReconnectConfig holds all reconnection-related configuration.
 	ReconnectConfig ReconnectConfig
+
+	// KeepaliveInterval controls how often the client sends an app-level AIP Keepalive
+	// (message_type 18) on connections it owns. Zero or negative disables keepalive.
+	// When unset (zero), GetKeepaliveInterval returns the default (30 seconds).
+	KeepaliveInterval time.Duration
 
 	// LogLevel: 0=disabled, 1=Error, 2=Warn, 3=Info, 4=Debug.
 	// Production: 1-2. Development: 3-4.
@@ -109,6 +119,25 @@ type ReconnectConfig struct {
 	// MaxBackoff is the maximum backoff duration cap.
 	// Default: 60 seconds
 	MaxBackoff time.Duration
+}
+
+const defaultKeepaliveInterval = 30 * time.Second
+
+// DefaultKeepaliveInterval is the default app-level AIP Keepalive period.
+func DefaultKeepaliveInterval() time.Duration {
+	return defaultKeepaliveInterval
+}
+
+// GetKeepaliveInterval returns the configured keepalive interval, or the default
+// when unset. Returns zero when keepalive is explicitly disabled (negative value).
+func (c *Config) GetKeepaliveInterval() time.Duration {
+	if c.KeepaliveInterval < 0 {
+		return 0
+	}
+	if c.KeepaliveInterval == 0 {
+		return defaultKeepaliveInterval
+	}
+	return c.KeepaliveInterval
 }
 
 // DefaultReconnectConfig returns the default reconnection configuration.

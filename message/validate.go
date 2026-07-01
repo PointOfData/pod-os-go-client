@@ -221,6 +221,7 @@ var intentValidators = map[string]func(*Message) ValidationErrors{
 	"ActorResponse":  validateActorResponse,
 	"ActorReport":    validateActorReport,
 	"Status":         validateStatus,
+	"StatusRequest":  validateStatusRequest,
 }
 
 // =============================================================================
@@ -607,6 +608,11 @@ func validateActorReport(m *Message) ValidationErrors {
 
 func validateStatus(m *Message) ValidationErrors {
 	// Status: no required struct fields beyond envelope
+	return nil
+}
+
+func validateStatusRequest(m *Message) ValidationErrors {
+	// StatusRequest: envelope-only; _msg_id is written by StatusRequestHeader when set
 	return nil
 }
 
@@ -1132,6 +1138,16 @@ func validateWireHeader(messageType int, h map[string]string, payloadLength int6
 	// ---- GatewayStreamOn (10) / GatewayStreamOff (9) ----
 	case 9, 10:
 		// No required header fields beyond envelope; no action needed.
+
+	// ---- StatusRequest (110) ----
+	case 110:
+		if !hasHeader(h, "_msg_id") {
+			errs = append(errs, errorf("warn", ctx, "Envelope.MessageId", "_msg_id", "header_missing",
+				"StatusRequest message is missing _msg_id; health-check responses may not be correlatable.",
+				"Set Envelope.MessageId to a UUID.",
+				`msg.Envelope.MessageId = uuid.New().String()`,
+				"message/types.go:Envelope.MessageId", "message/header.go:StatusRequestHeader"))
+		}
 
 	// ---- Status (3) / ActorResponse (30) / ActorReport (19) ----
 	case 3, 19, 30:

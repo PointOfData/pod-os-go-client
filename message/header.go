@@ -74,6 +74,12 @@ func ConstructHeader(msg *Message, intent Intent, connectionIdUuid string) strin
 	case "ActorRequest": // Request Message
 		return ActorRequestHeader(msg)
 
+	case "StatusRequest": // Status request (health probe)
+		return StatusRequestHeader(msg)
+
+	case "Status": // Status response
+		return StatusHeader(msg)
+
 	default:
 		// If the intent is not recognized, return an empty string.
 		return ""
@@ -161,6 +167,36 @@ func GatewayStreamOffHeader(msg *Message) string {
 func ActorRequestHeader(msg *Message) string {
 	var _header strings.Builder
 	_header.WriteString("_type=" + "status" + "\t")
+	if msg.MessageId != "" {
+		_header.WriteString("_msg_id=" + msg.MessageId)
+	}
+	return _header.String()
+}
+
+// StatusRequestHeader constructs the status-request header used for actor health probes.
+func StatusRequestHeader(msg *Message) string {
+	var _header strings.Builder
+	if msg.MessageId != "" {
+		_header.WriteString("_msg_id=" + msg.MessageId)
+	}
+	return _header.String()
+}
+
+// StatusHeader constructs a Status response header (_status, optional _msg, _msg_id).
+func StatusHeader(msg *Message) string {
+	var _header strings.Builder
+	status := "OK"
+	messageText := ""
+	if msg.Response != nil {
+		if msg.Response.Status != "" {
+			status = msg.Response.Status
+		}
+		messageText = msg.Response.Message
+	}
+	_header.WriteString("_status=" + status + "\t")
+	if messageText != "" {
+		_header.WriteString("_msg=" + messageText + "\t")
+	}
 	if msg.MessageId != "" {
 		_header.WriteString("_msg_id=" + msg.MessageId)
 	}

@@ -172,6 +172,7 @@ type Client struct {
 	receiverCancel context.CancelFunc               // Cancel function for receiver
 	receiverWg     sync.WaitGroup                   // Wait group for receiver goroutine
 	receiverActive bool                             // Whether background receiver is running
+	keepaliveWg    sync.WaitGroup                   // Wait group for keepalive goroutine
 	pendingMu      sync.RWMutex                     // Protects pending maps
 	pending        map[string]chan *message.Message // messageId -> response channel
 	pendingWithRaw map[string]chan *responseWithRaw // messageId -> response+raw channel
@@ -451,6 +452,10 @@ func NewClient(ctx context.Context, cfg config.Config) (*Client, error) {
 	}
 	client.reconnectCond = sync.NewCond(&client.reconnectingMu)
 
+	if cfg.UnmatchedMessageHandler != nil {
+		client.unmatchedHandler = cfg.UnmatchedMessageHandler
+	}
+
 	// Register the new client (double-check to prevent race conditions)
 	registryMu.Lock()
 	// Check again in case another goroutine created the client while we were creating ours
@@ -480,6 +485,7 @@ func NewClient(ctx context.Context, cfg config.Config) (*Client, error) {
 		if cfg.EnableConcurrentMode {
 			client.StartReceiver()
 		}
+		client.startKeepaliveLoop()
 		return client, nil
 	}
 	clientRegistry[key] = client
@@ -491,6 +497,8 @@ func NewClient(ctx context.Context, cfg config.Config) (*Client, error) {
 	if cfg.EnableConcurrentMode {
 		client.StartReceiver()
 	}
+
+	client.startKeepaliveLoop()
 
 	return client, nil
 }
@@ -538,6 +546,9 @@ func (c *Client) SendControlMessage(ctx context.Context, msg *message.SocketMess
 		return fmt.Errorf("connection closed before sending control message")
 	}
 
+	c.sendMu.Lock()
+	defer c.sendMu.Unlock()
+
 	sent, sendErr := c.conn.Send(msg.MessageBytes)
 	if sendErr != nil {
 		return fmt.Errorf("failed to send control message: %w", convertGatewayError(sendErr))
@@ -550,6 +561,132 @@ func (c *Client) SendControlMessage(ctx context.Context, msg *message.SocketMess
 
 	c.logger.Info("sent control message", "bytes", sent, "actor", c.gatewayActorName)
 	return nil
+}
+
+// startKeepaliveLoop starts a background goroutine that sends app-level AIP
+// Keepalive frames on the primary connection and idle pooled connections.
+func (c *Client) startKeepaliveLoop() {
+	interval := c.cfg.GetKeepaliveInterval()
+	if interval <= 0 {
+		return
+	}
+
+	c.keepaliveWg.Add(1)
+	go func() {
+		defer c.keepaliveWg.Done()
+		c.keepaliveLoop(interval)
+	}()
+}
+
+func (c *Client) keepaliveLoop(interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-c.receiverCtx.Done():
+			return
+		case <-ticker.C:
+			if c.closed || !c.IsConnected() {
+				continue
+			}
+			c.reconnectingMu.Lock()
+			reconnecting := c.reconnecting
+			c.reconnectingMu.Unlock()
+			if reconnecting {
+				continue
+			}
+			if err := c.sendKeepalive(); err != nil {
+				if c.logger.Enabled(log.LevelDebug) {
+					c.logger.Debug("keepalive send failed", "actor", c.gatewayActorName, "error", err)
+				}
+			}
+			if c.pool != nil {
+				c.sendPoolKeepalives()
+			}
+		}
+	}
+}
+
+func (c *Client) buildKeepaliveMessage() *message.Message {
+	return &message.Message{
+		Envelope: message.Envelope{
+			To:         "$system@" + c.gatewayActorName,
+			From:       c.FromAddress(),
+			Intent:     message.IntentType.Keepalive,
+			ClientName: c.clientName,
+			MessageId:  uuid.New().String(),
+		},
+	}
+}
+
+func (c *Client) encodeKeepalive() ([]byte, error) {
+	msg := c.buildKeepaliveMessage()
+	socketMsg, err := message.EncodeMessage(msg, uuid.New().String())
+	if err != nil {
+		return nil, err
+	}
+	return socketMsg.MessageBytes, nil
+}
+
+// sendKeepalive sends a fire-and-forget Keepalive on the primary connection.
+func (c *Client) sendKeepalive() error {
+	wire, err := c.encodeKeepalive()
+	if err != nil {
+		return fmt.Errorf("encode keepalive: %w", err)
+	}
+	if !c.conn.IsConnected() {
+		return fmt.Errorf("connection closed before sending keepalive")
+	}
+
+	c.sendMu.Lock()
+	defer c.sendMu.Unlock()
+
+	if !c.conn.IsConnected() {
+		return fmt.Errorf("connection closed before sending keepalive")
+	}
+
+	sent, sendErr := c.conn.Send(wire)
+	if sendErr != nil {
+		return fmt.Errorf("failed to send keepalive: %w", convertGatewayError(sendErr))
+	}
+	if sent == 0 {
+		return fmt.Errorf("failed to send keepalive: no bytes sent")
+	}
+
+	if c.logger.Enabled(log.LevelDebug) {
+		c.logger.Debug("sent keepalive", "bytes", sent, "actor", c.gatewayActorName)
+	}
+	return nil
+}
+
+func (c *Client) sendPoolKeepalives() {
+	wire, err := c.encodeKeepalive()
+	if err != nil {
+		if c.logger.Enabled(log.LevelDebug) {
+			c.logger.Debug("encode pool keepalive failed", "error", err)
+		}
+		return
+	}
+
+	sendTimeout := c.cfg.SendTimeout
+	if sendTimeout <= 0 {
+		sendTimeout = 5 * time.Second
+	}
+
+	c.pool.PingIdleConnections(func(conn net.Conn) error {
+		if err := conn.SetWriteDeadline(time.Now().Add(sendTimeout)); err != nil {
+			return err
+		}
+		n, err := conn.Write(wire)
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return fmt.Errorf("no bytes sent on pooled connection")
+		}
+		return nil
+	})
 }
 
 // StartReceiver starts the background receiver goroutine for concurrent message handling.
@@ -1510,6 +1647,9 @@ func (c *Client) Close() error {
 	} else if c.receiverCancel != nil {
 		c.receiverCancel() // Cancel context even if receiver wasn't started
 	}
+
+	// Stop keepalive loop (uses receiverCtx; wait for goroutine exit).
+	c.keepaliveWg.Wait()
 
 	// Remove from both registries
 	registryMu.Lock()

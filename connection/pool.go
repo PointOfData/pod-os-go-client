@@ -243,3 +243,50 @@ func (c *ChannelPool) Len() int {
 func (c *ChannelPool) NumberOfConns() int {
 	return len(c.semaphore)
 }
+
+// PingIdleConnections invokes ping on each idle (not checked-out) connection in
+// the pool, then returns them to the idle queue. Checked-out connections are
+// skipped. The pool mutex is held for the duration to avoid racing with Get().
+func (c *ChannelPool) PingIdleConnections(ping func(net.Conn) error) int {
+	if ping == nil {
+		return 0
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.aipConns == nil {
+		return 0
+	}
+
+	var idle []ConnectionData
+drain:
+	for {
+		select {
+		case conn := <-c.aipConns:
+			if conn.Conns != nil {
+				idle = append(idle, conn)
+			}
+		default:
+			break drain
+		}
+	}
+
+	sent := 0
+	for _, connData := range idle {
+		if err := ping(connData.Conns); err == nil {
+			sent++
+		}
+	}
+
+	for _, connData := range idle {
+		select {
+		case c.aipConns <- connData:
+		default:
+			<-c.semaphore
+			connData.Conns.Close()
+		}
+	}
+
+	return sent
+}

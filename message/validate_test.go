@@ -1230,6 +1230,25 @@ func TestValidate_Status_Valid(t *testing.T) {
 	assertNoErrors(t, msg.Validate(), "Status")
 }
 
+func TestValidate_StatusRequest_Valid(t *testing.T) {
+	defer withValidation(t)()
+	msg := &Message{
+		Envelope: Envelope{To: "a@g", From: "b@g", Intent: IntentType.StatusRequest, MessageId: "probe-1"},
+	}
+	assertNoErrors(t, msg.Validate(), "StatusRequest")
+}
+
+func TestValidate_StatusRequest_MissingTo(t *testing.T) {
+	defer withValidation(t)()
+	msg := &Message{
+		Envelope: Envelope{From: "b@g", Intent: IntentType.StatusRequest, MessageId: "probe-1"},
+	}
+	errs := msg.Validate()
+	if len(errs) == 0 {
+		t.Fatal("expected validation errors for missing To")
+	}
+}
+
 // =============================================================================
 // RESPONSE INTENT VALIDATORS
 // =============================================================================

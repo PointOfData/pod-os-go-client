@@ -11,6 +11,7 @@ A standalone Go package for connecting to Pod-OS Actors and working with the Pod
 - **Message Validation**: Struct-level, payload-level, and wire-level validation with dual-audience (engineer + LLM) error output
 - **Knowledge Base**: Embedded Pod-OS documentation and specifications
 - **Automatic Reconnection**: Configurable reconnect with exponential backoff, connection state callbacks, and transparent send-side retry
+- **Actor Health Checks**: `StatusRequest` / `Status` probe and reply helpers for non-Neural Memory socket Actors
 - **Zero Dashboard Dependencies**: No web framework or dashboard-specific code
 
 ## Installation
@@ -199,6 +200,102 @@ The `ConnectionState` values are:
 | `StateReconnectFailed` | last error | All reconnect attempts exhausted |
 
 The callback is invoked synchronously in the reconnect path — keep it fast and non-blocking.
+
+## App-Level Keepalive
+
+The client sends periodic AIP `Keepalive` frames (message_type 18) on every connection it owns so long-lived gateway sockets are not reaped during idle periods. This is separate from TCP `SO_KEEPALIVE`.
+
+| Field | Default | Description |
+|---|---|---|
+| `KeepaliveInterval` | `30s` | Interval between keepalive frames. Set to `0` or negative to disable. |
+
+Keepalive uses envelope-only routing: `To=$system@<gateway>`, `From=<clientName>@<gateway>`. The loop starts after the GatewayId handshake, pauses while disconnected or reconnecting, and stops on `Close()`. When a connection pool is configured, idle pooled connections are pinged as well; checked-out connections are skipped.
+
+## Actor Health Checks (Non-Neural Memory Actors)
+
+Neural Memory Actors are typically probed with store/get intents. **Socket Actors** (custom gateway-connected services that do not expose NeuralMemory) use the lightweight AIP `StatusRequest` / `Status` pair instead:
+
+| Intent | message_type | Role |
+|---|---|---|
+| `StatusRequest` | 110 | Inbound health probe (envelope + optional `_msg_id`) |
+| `Status` | 3 | Health reply (`_status`, `_msg`, echoed `_msg_id`) |
+
+Both intents are envelope-only — no NeuralMemory fields or payload are required.
+
+### Responding to probes (Actor side)
+
+An Actor that holds a long-lived gateway socket must enable concurrent mode so inbound probes can arrive while outbound work is in flight. Call `RespondToHealthChecks` immediately after `NewClient`:
+
+```go
+cfg := config.Config{
+    Host:                 "gateway-lb.example.com",
+    Port:                 "62312",
+    GatewayActorName:     "zeroth.pod-os.com",
+    ClientName:           "my-socket-actor",
+    EnableConcurrentMode: true,
+}
+
+client, err := podos.NewClient(ctx, cfg)
+if err != nil {
+    log.Fatal(err)
+}
+defer client.Close()
+
+podos.RespondToHealthChecks(client)
+```
+
+`RespondToHealthChecks` registers an unmatched-message handler on the background receiver. When a `StatusRequest` arrives that does not correlate to an outbound request, the client replies with a `Status` message:
+
+- `To` / `From` are swapped from the probe
+- `MessageId` echoes the probe's `_msg_id` so the prober can correlate
+- `Response.Status` is `"OK"` and `Response.Message` is `"actor is healthy"`
+- The reply is sent via `SendControlMessage` (fire-and-forget; no response expected)
+
+For custom reply logic, call `BuildStatusHealthReply` directly and send the encoded frame yourself:
+
+```go
+client.SetUnmatchedMessageHandler(func(inbound *message.Message) {
+    if inbound.Intent.Name != message.IntentType.StatusRequest.Name {
+        return
+    }
+    reply := podos.BuildStatusHealthReply(client, inbound)
+    // customize reply.Response before encoding, if needed
+    socketMsg, _ := message.EncodeMessage(reply, uuid.New().String())
+    _ = client.SendControlMessage(ctx, socketMsg)
+})
+```
+
+Wire `UnmatchedMessageHandler` in `config.Config` before `NewClient` if you need the handler active from the first received frame.
+
+### Sending probes (monitor side)
+
+To check whether a socket Actor is healthy, send a `StatusRequest` with a unique `MessageId` and wait for the correlated `Status` response:
+
+```go
+probeID := uuid.New().String()
+probe := &message.Message{
+    Envelope: message.Envelope{
+        To:         "my-socket-actor@zeroth.pod-os.com",
+        From:       client.FromAddress(),
+        Intent:     message.IntentType.StatusRequest,
+        ClientName: client.ClientName(),
+        MessageId:  probeID,
+    },
+}
+
+resp, err := client.SendMessage(ctx, probe)
+if err != nil {
+    log.Fatal(err)
+}
+if resp.ProcessingStatus() != "OK" {
+    log.Fatalf("unhealthy: %s", resp.Response.Message)
+}
+if resp.MessageId != probeID {
+    log.Fatalf("correlation mismatch: got %q, want %q", resp.MessageId, probeID)
+}
+```
+
+When `PODOS_VALIDATE=1` is set, `msg.Validate()` accepts envelope-only `StatusRequest` messages and warns if `_msg_id` is missing (responses would not be correlatable).
 
 ## Logging and Telemetry
 
