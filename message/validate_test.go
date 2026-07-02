@@ -353,6 +353,12 @@ func TestValidate_StoreEvent(t *testing.T) {
 				Event: &EventFields{Owner: "$sys", Location: "TERRA"}},
 			wantRule: "required", wantField: "Event.LocationSeparator",
 		},
+		{
+			name: "semantic/Event.Id set at create",
+			msg: &Message{Envelope: base(),
+				Event: &EventFields{Owner: "$sys", Id: "should-not-set", Location: "TERRA", LocationSeparator: "|"}},
+			wantRule: "semantic",
+		},
 	}
 
 	for _, tt := range tests {
@@ -498,7 +504,7 @@ func TestValidate_StoreBatchTags(t *testing.T) {
 
 	base := func() Envelope { return envelopeFor(IntentType.StoreBatchTags) }
 
-	validEvent := &EventFields{Id: "event-id", Owner: "$sys"}
+	validEvent := &EventFields{Id: "event-id", Owner: "user-event-id"}
 	validTags := TagList{{Key: "category", Value: "value1"}}
 
 	tests := []struct {
@@ -517,7 +523,7 @@ func TestValidate_StoreBatchTags(t *testing.T) {
 			name: "valid/uniqueId path",
 			msg: &Message{
 				Envelope:     base(),
-				Event:        &EventFields{UniqueId: "my-uid", Owner: "$sys"},
+				Event:        &EventFields{UniqueId: "my-uid", Owner: "user-event-id"},
 				NeuralMemory: &NeuralMemoryFields{Tags: validTags},
 			},
 			wantOK: true,
@@ -531,10 +537,28 @@ func TestValidate_StoreBatchTags(t *testing.T) {
 			name: "missing Event.Id AND Event.UniqueId",
 			msg: &Message{
 				Envelope:     base(),
-				Event:        &EventFields{Owner: "$sys"},
+				Event:        &EventFields{Owner: "user-event-id"},
 				NeuralMemory: &NeuralMemoryFields{Tags: validTags},
 			},
 			wantRule: "one_of_required",
+		},
+		{
+			name: "semantic/owner is $sys",
+			msg: &Message{
+				Envelope:     base(),
+				Event:        &EventFields{Id: "event-id", Owner: "$sys"},
+				NeuralMemory: &NeuralMemoryFields{Tags: validTags},
+			},
+			wantRule: "semantic",
+		},
+		{
+			name: "semantic/target Id is $sys",
+			msg: &Message{
+				Envelope:     base(),
+				Event:        &EventFields{Id: "$sys", Owner: "user-event-id"},
+				NeuralMemory: &NeuralMemoryFields{Tags: validTags},
+			},
+			wantRule: "semantic",
 		},
 		{
 			name: "missing Event.Owner AND Event.OwnerUniqueID",
@@ -586,6 +610,75 @@ func TestValidate_StoreBatchTags(t *testing.T) {
 }
 
 // =============================================================================
+// STORE DATA
+// =============================================================================
+
+func TestValidate_StoreData(t *testing.T) {
+	defer withValidation(t)()
+
+	base := func() Envelope { return envelopeFor(IntentType.StoreData) }
+
+	tests := []struct {
+		name     string
+		msg      *Message
+		wantRule string
+		wantOK   bool
+	}{
+		{
+			name: "valid/uniqueId+ownerUniqueID",
+			msg: &Message{Envelope: base(), Event: &EventFields{
+				UniqueId: "target-uid", OwnerUniqueID: "user-001",
+			}},
+			wantOK: true,
+		},
+		{
+			name:     "nil Event",
+			msg:      &Message{Envelope: base()},
+			wantRule: "nil_struct",
+		},
+		{
+			name: "missing target Id",
+			msg: &Message{Envelope: base(), Event: &EventFields{
+				OwnerUniqueID: "user-001",
+			}},
+			wantRule: "one_of_required",
+		},
+		{
+			name: "missing owner",
+			msg: &Message{Envelope: base(), Event: &EventFields{
+				UniqueId: "target-uid",
+			}},
+			wantRule: "one_of_required",
+		},
+		{
+			name: "semantic/owner is $sys",
+			msg: &Message{Envelope: base(), Event: &EventFields{
+				UniqueId: "target-uid", Owner: "$sys",
+			}},
+			wantRule: "semantic",
+		},
+		{
+			name: "semantic/target is $sys",
+			msg: &Message{Envelope: base(), Event: &EventFields{
+				Id: "$sys", OwnerUniqueID: "user-001",
+			}},
+			wantRule: "semantic",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			errs := tt.msg.Validate()
+			if tt.wantOK {
+				assertNoErrors(t, errs, tt.name)
+				return
+			}
+			assertRule(t, errs, tt.wantRule, tt.name)
+		})
+	}
+}
+
+// =============================================================================
 // GET EVENT
 // =============================================================================
 
@@ -619,6 +712,13 @@ func TestValidate_GetEvent(t *testing.T) {
 			name:     "missing Id and UniqueId",
 			msg:      &Message{Envelope: base(), Event: &EventFields{}},
 			wantRule: "one_of_required",
+		},
+		{
+			name: "semantic/owner not used",
+			msg: &Message{Envelope: base(), Event: &EventFields{
+				Id: "2024.01.15...", Owner: "$sys",
+			}},
+			wantRule: "semantic",
 		},
 	}
 

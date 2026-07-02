@@ -37,7 +37,7 @@ type ValidationError struct {
 	WireField   string   // Wire protocol key: "category"
 	Rule        string   // "required", "one_of_required", "format", "nil_struct",
 	             //        "header_missing", "header_value", "payload_type",
-	             //        "payload_format", "uncovered"
+	             //        "payload_format", "semantic", "uncovered"
 	Message     string   // Human-readable description of what is wrong
 	Fix         string   // Concrete remediation step in plain English
 	ExampleCode string   // Minimal Go snippet showing a correct value
@@ -164,6 +164,122 @@ func warnUncovered(intent, msg string) ValidationError {
 		"This case is currently unsupported. Monitor release notes for support updates.", "", "")
 }
 
+func semanticError(intent, field, wireField, msg, fix, code string, refs ...string) ValidationError {
+	return errorf("error", intent, field, wireField, "semantic", msg, fix, code, refs...)
+}
+
+func semanticWarn(intent, field, wireField, msg, fix, code string, refs ...string) ValidationError {
+	return errorf("warn", intent, field, wireField, "semantic", msg, fix, code, refs...)
+}
+
+const sysSpecialID = "$sys"
+
+// Owner/Id semantic guidance (Evolutionary Neural Memory).
+const (
+	guidanceOwnerCreate = "Owner is the entity that created the event: Event.Owner must be a pre-existing internal Event.Id in this database or $sys; Event.OwnerUniqueID must be a pre-existing Event.UniqueId."
+	guidanceOwnerApply  = "Owner is the creating entity (may differ from the target Id): Event.Owner must be a pre-existing internal Event.Id in this database (not $sys); Event.OwnerUniqueID must be a pre-existing Event.UniqueId."
+	guidanceIdApply     = "Event.Id or Event.UniqueId identifies the pre-existing target event in this database to which tags or payload are applied ($sys is not an individual event)."
+	guidanceIdLookup    = "Event.Id must be a pre-existing internal Event.Id or $sys; Event.UniqueId must be a pre-existing Event.UniqueId in this database."
+	guidanceOwnerFilter = "Owner filters the tag search: GetEventsForTags.Owner must be a pre-existing internal Event.Id or $sys; GetEventsForTags.OwnerUniqueID must be a pre-existing Event.UniqueId."
+	guidanceIdCreate    = "Event.Id is AIP-generated at storage time (time+location); set Event.UniqueId for a developer-controlled identifier known before storage."
+	guidanceLinkIdCreate = "NeuralMemory.Link.Id is AIP-generated at storage time; set NeuralMemory.Link.UniqueId for a developer-controlled link identifier."
+)
+
+func isSysID(s string) bool {
+	return s == sysSpecialID
+}
+
+func validateApplyToExistingSemantics(intent string, ev *EventFields) ValidationErrors {
+	var errs ValidationErrors
+	if ev == nil {
+		return errs
+	}
+	if isSysID(ev.Owner) {
+		errs = append(errs, semanticError(intent, "Event.Owner", "owner",
+			fmt.Sprintf("Event.Owner must not be %q for %s; owner must be a pre-existing individual event Id in this database.", sysSpecialID, intent),
+			"Set Event.Owner to the internal Event.Id of the entity that owns/creates the tags or payload.",
+			`msg.Event.Owner = "2024.01.15..."`,
+			"message/types.go:EventFields.Owner"))
+	}
+	if isSysID(ev.Id) {
+		errs = append(errs, semanticError(intent, "Event.Id", "event_id",
+			fmt.Sprintf("Event.Id must not be %q for %s; $sys is not an individual event.", sysSpecialID, intent),
+			"Set Event.Id to the internal Event.Id of the pre-existing target event.",
+			`msg.Event.Id = "2024.01.15..."`,
+			"message/types.go:EventFields.Id"))
+	}
+	if isSysID(ev.UniqueId) {
+		errs = append(errs, semanticError(intent, "Event.UniqueId", "unique_id",
+			fmt.Sprintf("Event.UniqueId must not be %q for %s; $sys is not an individual event.", sysSpecialID, intent),
+			"Set Event.UniqueId to the UniqueId of the pre-existing target event.",
+			`msg.Event.UniqueId = "my-event-uid"`,
+			"message/types.go:EventFields.UniqueId"))
+	}
+	return errs
+}
+
+func validateLookupOwnerNotUsedEvent(intent string, ev *EventFields) ValidationErrors {
+	var errs ValidationErrors
+	if ev == nil {
+		return errs
+	}
+	if ev.Owner != "" || ev.OwnerUniqueID != "" {
+		errs = append(errs, semanticWarn(intent,
+			"Event.Owner / Event.OwnerUniqueID", "owner / owner_unique_id",
+			fmt.Sprintf("Owner fields are not used for %s; only Event.Id or Event.UniqueId identify the event.", intent),
+			"Remove Event.Owner and Event.OwnerUniqueID; set Event.Id or Event.UniqueId instead.",
+			`msg.Event = &message.EventFields{Id: "2024.01.15..."}`,
+			"message/types.go:EventFields.Owner", "message/header.go:GetEventMessageHeader"))
+	}
+	return errs
+}
+
+func validateLookupOwnerNotUsedLink(intent string, lk *LinkFields) ValidationErrors {
+	var errs ValidationErrors
+	if lk == nil {
+		return errs
+	}
+	if lk.Owner != "" || lk.OwnerID != "" || lk.OwnerUniqueID != "" {
+		errs = append(errs, semanticWarn(intent,
+			"NeuralMemory.Link.Owner / OwnerID / OwnerUniqueID", "owner / owner_event_id / owner_unique_id",
+			fmt.Sprintf("Owner fields are not used for %s; only NeuralMemory.Link.Id or NeuralMemory.Link.UniqueId identify the link event.", intent),
+			"Remove owner fields; set NeuralMemory.Link.Id or NeuralMemory.Link.UniqueId.",
+			`msg.NeuralMemory.Link = &message.LinkFields{Id: "link-event-id"}`,
+			"message/types.go:LinkFields", "message/header.go:UnlinkEventsMessageHeader"))
+	}
+	return errs
+}
+
+func validateCreateEventIdSet(intent, idField, idValue string) ValidationErrors {
+	if idValue == "" {
+		return nil
+	}
+	field := "Event.Id"
+	if idField != "" {
+		field = idField
+	}
+	return ValidationErrors{semanticWarn(intent, field, "event_id",
+		fmt.Sprintf("%s is set for %s but Event.Id is AIP-generated at storage time (time+location).", field, intent),
+		guidanceIdCreate,
+		`msg.Event.UniqueId = "my-event-uid"`,
+		"message/types.go:EventFields.Id", "message/types.go:EventFields.UniqueId")}
+}
+
+func validateCreateLinkIdSet(intent, idField, idValue string) ValidationErrors {
+	if idValue == "" {
+		return nil
+	}
+	field := "NeuralMemory.Link.Id"
+	if idField != "" {
+		field = idField
+	}
+	return ValidationErrors{semanticWarn(intent, field, "event_id",
+		fmt.Sprintf("%s is set for %s but link Event.Id is AIP-generated at storage time.", field, intent),
+		guidanceLinkIdCreate,
+		`msg.NeuralMemory.Link.UniqueId = "my-link-uid"`,
+		"message/types.go:LinkFields.Id", "message/types.go:LinkFields.UniqueId")}
+}
+
 // isNameAtGateway checks that s contains exactly one '@' and neither part is empty.
 func isNameAtGateway(s string) bool {
 	idx := strings.IndexByte(s, '@')
@@ -195,6 +311,7 @@ func (m *Message) Validate() ValidationErrors {
 var intentValidators = map[string]func(*Message) ValidationErrors{
 	// NeuralMemory requests
 	"StoreEvent":       validateStoreEvent,
+	"StoreData":        validateStoreData,
 	"StoreBatchEvents": validateStoreBatchEvents,
 	"StoreBatchTags":   validateStoreBatchTags,
 	"GetEvent":         validateGetEvent,
@@ -302,10 +419,11 @@ func validateStoreEvent(m *Message) ValidationErrors {
 		errs = append(errs, oneOfRequired(intent,
 			"Event.Owner", "owner",
 			"Event.OwnerUniqueID", "owner_unique_id",
-			"Set Event.Owner or Event.OwnerUniqueID to identify the owning entity.",
+			"Set Event.Owner or Event.OwnerUniqueID to identify the entity that created this event. "+guidanceOwnerCreate,
 			`msg.Event.Owner = "$sys"`,
 			"message/types.go:EventFields.Owner", "message/header.go:StoreEventMessageHeader"))
 	}
+	errs = append(errs, validateCreateEventIdSet(intent, "Event.Id", m.Event.Id)...)
 	if m.Event.Location == "" {
 		errs = append(errs, requiredField(intent, "Event.Location", "loc",
 			"Set Event.Location to a location string (e.g. TERRA|47.6|-122.5).",
@@ -318,6 +436,37 @@ func validateStoreEvent(m *Message) ValidationErrors {
 			`msg.Event.LocationSeparator = "|"`,
 			"message/types.go:EventFields.LocationSeparator"))
 	}
+	return errs
+}
+
+func validateStoreData(m *Message) ValidationErrors {
+	const intent = "StoreData"
+	var errs ValidationErrors
+
+	if m.Event == nil {
+		errs = append(errs, nilStruct(intent, "Event",
+			"Initialize Event with the Id or UniqueId of the target event.",
+			`msg.Event = &message.EventFields{UniqueId: "my-event-uid", OwnerUniqueID: "user-001"}`,
+			"message/types.go:EventFields", "message/header.go:StoreDataMessageHeader"))
+		return errs
+	}
+	if m.Event.Id == "" && m.Event.UniqueId == "" {
+		errs = append(errs, oneOfRequired(intent,
+			"Event.Id", "event_id",
+			"Event.UniqueId", "unique_id",
+			"Set Event.Id or Event.UniqueId to the pre-existing target event. "+guidanceIdApply,
+			`msg.Event.UniqueId = "my-event-uid"`,
+			"message/types.go:EventFields", "message/header.go:StoreDataMessageHeader"))
+	}
+	if m.Event.Owner == "" && m.Event.OwnerUniqueID == "" {
+		errs = append(errs, oneOfRequired(intent,
+			"Event.Owner", "owner",
+			"Event.OwnerUniqueID", "owner_unique_id",
+			"Set Event.Owner or Event.OwnerUniqueID to the creating entity (may differ from the target Id). "+guidanceOwnerApply,
+			`msg.Event.OwnerUniqueID = "user-001"`,
+			"message/types.go:EventFields.Owner", "message/header.go:StoreDataMessageHeader"))
+	}
+	errs = append(errs, validateApplyToExistingSemantics(intent, m.Event)...)
 	return errs
 }
 
@@ -343,18 +492,19 @@ func validateStoreBatchTags(m *Message) ValidationErrors {
 			errs = append(errs, oneOfRequired(intent,
 				"Event.Id", "event_id",
 				"Event.UniqueId", "unique_id",
-				"Set Event.Id or Event.UniqueId to identify the target event.",
-				`msg.Event.Id = "2024.01.15..."`,
-				"message/types.go:EventFields"))
+				"Set Event.Id or Event.UniqueId to the pre-existing target event. "+guidanceIdApply,
+				`msg.Event.UniqueId = "my-event-uid"`,
+				"message/types.go:EventFields", "message/header.go:StoreBatchTagsMessageHeader"))
 		}
 		if m.Event.Owner == "" && m.Event.OwnerUniqueID == "" {
 			errs = append(errs, oneOfRequired(intent,
 				"Event.Owner", "owner",
 				"Event.OwnerUniqueID", "owner_unique_id",
-				"Set Event.Owner or Event.OwnerUniqueID to identify the owning entity.",
-				`msg.Event.Owner = "$sys"`,
-				"message/types.go:EventFields.Owner"))
+				"Set Event.Owner or Event.OwnerUniqueID to the creating entity (may differ from the target Id). "+guidanceOwnerApply,
+				`msg.Event.OwnerUniqueID = "user-001"`,
+				"message/types.go:EventFields.Owner", "message/header.go:StoreBatchTagsMessageHeader"))
 		}
+		errs = append(errs, validateApplyToExistingSemantics(intent, m.Event)...)
 	}
 
 	errs = append(errs, validatePayload(m)...)
@@ -376,10 +526,11 @@ func validateGetEvent(m *Message) ValidationErrors {
 		errs = append(errs, oneOfRequired(intent,
 			"Event.Id", "event_id",
 			"Event.UniqueId", "unique_id",
-			"Set Event.Id or Event.UniqueId to identify the event to retrieve.",
+			"Set Event.Id or Event.UniqueId to identify the event to retrieve. "+guidanceIdLookup,
 			`msg.Event.Id = "2024.01.15..."`,
 			"message/types.go:EventFields", "message/header.go:GetEventMessageHeader"))
 	}
+	errs = append(errs, validateLookupOwnerNotUsedEvent(intent, m.Event)...)
 	return errs
 }
 
@@ -464,10 +615,11 @@ func validateLinkEvent(m *Message) ValidationErrors {
 		errs = append(errs, oneOfRequired(intent,
 			"NeuralMemory.Link.OwnerID", "owner_event_id",
 			"NeuralMemory.Link.OwnerUniqueID", "owner_unique_id",
-			"Set NeuralMemory.Link.OwnerID or NeuralMemory.Link.OwnerUniqueID.",
+			"Set NeuralMemory.Link.OwnerID or NeuralMemory.Link.OwnerUniqueID to the entity that created the link event. "+guidanceOwnerCreate,
 			`msg.NeuralMemory.Link.OwnerID = "owner-event-id"`,
 			"message/types.go:LinkFields.OwnerID"))
 	}
+	errs = append(errs, validateCreateLinkIdSet(intent, "NeuralMemory.Link.Id", lk.Id)...)
 	if lk.Location == "" {
 		errs = append(errs, requiredField(intent, "NeuralMemory.Link.Location", "loc",
 			"Set NeuralMemory.Link.Location to a location string (moved from Event.Location per pending code change).",
@@ -506,10 +658,11 @@ func validateUnlinkEvent(m *Message) ValidationErrors {
 		errs = append(errs, oneOfRequired(intent,
 			"NeuralMemory.Link.Id", "event_id",
 			"NeuralMemory.Link.UniqueId", "unique_id",
-			"Set NeuralMemory.Link.Id or NeuralMemory.Link.UniqueId to identify the link event object.",
+			"Set NeuralMemory.Link.Id or NeuralMemory.Link.UniqueId to identify the link event object. "+guidanceIdLookup,
 			`msg.NeuralMemory.Link.Id = "link-event-id"`,
 			"message/types.go:LinkFields", "message/header.go:UnlinkEventsMessageHeader"))
 	}
+	errs = append(errs, validateLookupOwnerNotUsedLink(intent, lk)...)
 	// LocationSeparator required when Location is set
 	if lk.Location != "" && lk.LocationSeparator == "" {
 		errs = append(errs, requiredField(intent, "NeuralMemory.Link.LocationSeparator", "loc_delim",
@@ -691,10 +844,11 @@ func validatePayload(m *Message) ValidationErrors {
 					"owner / owner_unique_id",
 					"one_of_required",
 					fmt.Sprintf("BatchEventSpec[%d]: Owner or OwnerUniqueID is required.", i),
-					"Set Event.Owner or Event.OwnerUniqueID.",
+					"Set Event.Owner or Event.OwnerUniqueID. "+guidanceOwnerCreate,
 					`events[i].Event.Owner = "$sys"`,
 					"message/types.go:BatchEventSpec"))
 			}
+			errs = append(errs, validateCreateEventIdSet(intent, path+".Id", spec.Event.Id)...)
 			if spec.Event.Location == "" {
 				errs = append(errs, errorf("error", intent, path+".Location", "loc", "payload_format",
 					fmt.Sprintf("BatchEventSpec[%d]: Location is required.", i),
@@ -770,10 +924,12 @@ func validatePayload(m *Message) ValidationErrors {
 					fmt.Sprintf("%s.Owner / %s.OwnerUniqueID", evPath, evPath),
 					"owner / owner_unique_id", "payload_format",
 					fmt.Sprintf("BatchLinkEventSpec[%d]: Event.Owner or Event.OwnerUniqueID is required.", i),
-					"Set Event.Owner or Event.OwnerUniqueID.",
+					"Set Event.Owner or Event.OwnerUniqueID. "+guidanceOwnerCreate,
 					`links[i].Event.Owner = "$sys"`,
 					"message/types.go:BatchLinkEventSpec"))
 			}
+			errs = append(errs, validateCreateEventIdSet(intent, evPath+".Id", spec.Event.Id)...)
+			errs = append(errs, validateCreateLinkIdSet(intent, lkPath+".Id", spec.Link.Id)...)
 			if spec.Link.Timestamp == "" {
 				errs = append(errs, errorf("error", intent, lkPath+".Timestamp", "timestamp", "payload_format",
 					fmt.Sprintf("BatchLinkEventSpec[%d]: Link.Timestamp is required (NOT auto-generated).", i),
@@ -818,7 +974,7 @@ func validatePayload(m *Message) ValidationErrors {
 					fmt.Sprintf("%s.OwnerID / %s.OwnerUniqueID", lkPath, lkPath),
 					"owner_event_id / owner_unique_id", "payload_format",
 					fmt.Sprintf("BatchLinkEventSpec[%d]: Link.OwnerID or Link.OwnerUniqueID is required.", i),
-					"Set Link.OwnerID or Link.OwnerUniqueID.",
+					"Set Link.OwnerID or Link.OwnerUniqueID. "+guidanceOwnerCreate,
 					`links[i].Link.OwnerID = "owner-event-id"`,
 					"message/types.go:LinkFields.OwnerID"))
 			}
@@ -1031,7 +1187,7 @@ var knownMessageTypes = func() map[int]bool {
 	it := IntentType
 	// Collect all non-zero message types via the exported intentTypes struct
 	for _, intent := range []Intent{
-		it.StoreEvent, it.StoreBatchEvents, it.StoreBatchTags,
+		it.StoreEvent, it.StoreData, it.StoreBatchEvents, it.StoreBatchTags,
 		it.GetEvent, it.GetEventsForTags,
 		it.LinkEvent, it.UnlinkEvent, it.StoreBatchLinks,
 		it.StoreEventResponse, it.StoreBatchEventsResponse, it.StoreBatchTagsResponse,
@@ -1188,23 +1344,67 @@ func validateNeuralMemoryRequestHeader(cmd string, h map[string]string, payloadL
 		if !hasHeader(h, "event_id") && !hasHeader(h, "unique_id") {
 			errs = append(errs, errorf("error", ctx, "Event.Id / Event.UniqueId", "event_id / unique_id", "header_missing",
 				"StoreBatchTags header is missing event_id or unique_id.",
-				"Set Event.Id or Event.UniqueId to identify the target event.",
-				`msg.Event.Id = "2024.01.15..."`,
+				"Set Event.Id or Event.UniqueId to the pre-existing target event. "+guidanceIdApply,
+				`msg.Event.UniqueId = "my-event-uid"`,
 				"message/header.go:StoreBatchTagsMessageHeader"))
 		}
 		if !hasHeader(h, "owner") && !hasHeader(h, "owner_unique_id") {
 			errs = append(errs, errorf("error", ctx, "Event.Owner / Event.OwnerUniqueID", "owner / owner_unique_id", "header_missing",
 				"StoreBatchTags header is missing owner or owner_unique_id.",
-				"Set Event.Owner or Event.OwnerUniqueID.",
-				`msg.Event.Owner = "$sys"`,
+				"Set Event.Owner or Event.OwnerUniqueID. "+guidanceOwnerApply,
+				`msg.Event.OwnerUniqueID = "user-001"`,
 				"message/header.go:StoreBatchTagsMessageHeader"))
+		}
+		if h["owner"] == sysSpecialID {
+			errs = append(errs, semanticError("StoreBatchTags", "Event.Owner", "owner",
+				fmt.Sprintf("StoreBatchTags owner must not be %q; owner must be a pre-existing individual event Id.", sysSpecialID),
+				"Set Event.Owner to the internal Event.Id of the creating entity.",
+				`msg.Event.Owner = "2024.01.15..."`,
+				"message/header.go:StoreBatchTagsMessageHeader"))
+		}
+		if h["event_id"] == sysSpecialID || h["unique_id"] == sysSpecialID {
+			errs = append(errs, semanticError("StoreBatchTags", "Event.Id / Event.UniqueId", "event_id / unique_id",
+				fmt.Sprintf("StoreBatchTags target Id must not be %q; $sys is not an individual event.", sysSpecialID),
+				"Set Event.Id or Event.UniqueId to the pre-existing target event.",
+				`msg.Event.UniqueId = "my-event-uid"`,
+				"message/header.go:StoreBatchTagsMessageHeader"))
+		}
+
+	case "store_data":
+		if !hasHeader(h, "event_id") && !hasHeader(h, "unique_id") {
+			errs = append(errs, errorf("error", ctx, "Event.Id / Event.UniqueId", "event_id / unique_id", "header_missing",
+				"StoreData header is missing event_id or unique_id.",
+				"Set Event.Id or Event.UniqueId to the pre-existing target event. "+guidanceIdApply,
+				`msg.Event.UniqueId = "my-event-uid"`,
+				"message/header.go:StoreDataMessageHeader"))
+		}
+		if !hasHeader(h, "owner") && !hasHeader(h, "owner_unique_id") {
+			errs = append(errs, errorf("error", ctx, "Event.Owner / Event.OwnerUniqueID", "owner / owner_unique_id", "header_missing",
+				"StoreData header is missing owner or owner_unique_id.",
+				"Set Event.Owner or Event.OwnerUniqueID. "+guidanceOwnerApply,
+				`msg.Event.OwnerUniqueID = "user-001"`,
+				"message/header.go:StoreDataMessageHeader"))
+		}
+		if h["owner"] == sysSpecialID {
+			errs = append(errs, semanticError("StoreData", "Event.Owner", "owner",
+				fmt.Sprintf("StoreData owner must not be %q; owner must be a pre-existing individual event Id.", sysSpecialID),
+				"Set Event.Owner to the internal Event.Id of the creating entity.",
+				`msg.Event.Owner = "2024.01.15..."`,
+				"message/header.go:StoreDataMessageHeader"))
+		}
+		if h["event_id"] == sysSpecialID || h["unique_id"] == sysSpecialID {
+			errs = append(errs, semanticError("StoreData", "Event.Id / Event.UniqueId", "event_id / unique_id",
+				fmt.Sprintf("StoreData target Id must not be %q; $sys is not an individual event.", sysSpecialID),
+				"Set Event.Id or Event.UniqueId to the pre-existing target event.",
+				`msg.Event.UniqueId = "my-event-uid"`,
+				"message/header.go:StoreDataMessageHeader"))
 		}
 
 	case "get":
 		if !hasHeader(h, "event_id") && !hasHeader(h, "unique_id") {
 			errs = append(errs, errorf("error", ctx, "Event.Id / Event.UniqueId", "event_id / unique_id", "header_missing",
 				"GetEvent header is missing event_id or unique_id.",
-				"Set Event.Id or Event.UniqueId to identify the event to retrieve.",
+				"Set Event.Id or Event.UniqueId to identify the event to retrieve. "+guidanceIdLookup,
 				`msg.Event.Id = "2024.01.15..."`,
 				"message/header.go:GetEventMessageHeader"))
 		}
