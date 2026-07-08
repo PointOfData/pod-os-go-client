@@ -73,6 +73,12 @@ type ClientConfig struct {
 	DialTimeout    time.Duration // Timeout for establishing connection
 	SendTimeout    time.Duration // Timeout for send operations (SendDeadline)
 	ReceiveTimeout time.Duration // Timeout for receive operations
+
+	// TCP keepalive tuning. Zero values use package defaults in applyTCPOptions.
+	TCPKeepAliveIdle     time.Duration
+	TCPKeepAliveInterval time.Duration
+	TCPKeepAliveCount    int
+	TCPUserTimeout       time.Duration
 }
 
 // IClient interface defines the client operations
@@ -100,6 +106,10 @@ type Client struct {
 
 	TCPKeepAlive       bool
 	TCPKeepAlivePeriod time.Duration
+	tcpKeepAliveIdle     time.Duration
+	tcpKeepAliveInterval time.Duration
+	tcpKeepAliveCount    int
+	tcpUserTimeout       time.Duration
 	ReceiveChunkSize   int
 	ReceiveDeadline    time.Duration
 	SendDeadline       time.Duration
@@ -140,19 +150,35 @@ func (c *Client) applyTCPOptions() {
 	if err := tcpConn.SetNoDelay(true); err != nil {
 		c.logger.Warn("failed to set TCP_NODELAY", "error", err)
 	}
+	kaIdle := keepAliveIdle
+	kaInterval := keepAliveInterval
+	kaCount := keepAliveCount
+	userTimeoutMS := tcpUserTimeoutMS
+	if c.tcpKeepAliveIdle > 0 {
+		kaIdle = c.tcpKeepAliveIdle
+	}
+	if c.tcpKeepAliveInterval > 0 {
+		kaInterval = c.tcpKeepAliveInterval
+	}
+	if c.tcpKeepAliveCount > 0 {
+		kaCount = c.tcpKeepAliveCount
+	}
+	if c.tcpUserTimeout > 0 {
+		userTimeoutMS = int(c.tcpUserTimeout / time.Millisecond)
+	}
 	kaCfg := net.KeepAliveConfig{
 		Enable:   true,
-		Idle:     keepAliveIdle,
-		Interval: keepAliveInterval,
-		Count:    keepAliveCount,
+		Idle:     kaIdle,
+		Interval: kaInterval,
+		Count:    kaCount,
 	}
 	if err := tcpConn.SetKeepAliveConfig(kaCfg); err != nil {
 		c.logger.Warn("failed to set keepalive config", "error", err)
 		// Fall back to the coarse single-knob keepalive.
 		_ = tcpConn.SetKeepAlive(true)
-		_ = tcpConn.SetKeepAlivePeriod(keepAliveIdle)
+		_ = tcpConn.SetKeepAlivePeriod(kaIdle)
 	}
-	if err := setTCPUserTimeout(c.Conn, tcpUserTimeoutMS); err != nil {
+	if err := setTCPUserTimeout(c.Conn, userTimeoutMS); err != nil {
 		c.logger.Warn("failed to set TCP_USER_TIMEOUT", "error", err)
 	}
 }
@@ -212,6 +238,18 @@ func NewClient(ctx context.Context, cfg ClientConfig, network string, host strin
 		Host:        host,
 		Port:        port,
 		DialTimeout: dialTimeout,
+	}
+	if cfg.TCPKeepAliveIdle > 0 {
+		client.tcpKeepAliveIdle = cfg.TCPKeepAliveIdle
+	}
+	if cfg.TCPKeepAliveInterval > 0 {
+		client.tcpKeepAliveInterval = cfg.TCPKeepAliveInterval
+	}
+	if cfg.TCPKeepAliveCount > 0 {
+		client.tcpKeepAliveCount = cfg.TCPKeepAliveCount
+	}
+	if cfg.TCPUserTimeout > 0 {
+		client.tcpUserTimeout = cfg.TCPUserTimeout
 	}
 
 	var clientErrors error

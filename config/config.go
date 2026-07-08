@@ -59,6 +59,26 @@ type Config struct {
 	// When unset (zero), GetKeepaliveInterval returns the default (30 seconds).
 	KeepaliveInterval time.Duration
 
+	// SkipGlobalRegistry when true prevents storing this client in the global
+	// clientRegistry/actorRegistry. Used by warm-pool standby connections so they
+	// do not clobber the canonical primary client for the same gateway FQN.
+	SkipGlobalRegistry bool
+
+	// ReceiveLoopTimeout bounds each background receive iteration in concurrent mode.
+	// When unset (zero), defaults to 30 seconds.
+	ReceiveLoopTimeout time.Duration
+
+	// ConnectionLivenessTimeout is the liveness backstop: if requests are pending
+	// but no frame has been received for this long, the connection is declared dead.
+	// When unset (zero), defaults to 90 seconds.
+	ConnectionLivenessTimeout time.Duration
+
+	// TCP keepalive tuning for the underlying transport (see connection.ClientConfig).
+	TCPKeepAliveIdle     time.Duration
+	TCPKeepAliveInterval time.Duration
+	TCPKeepAliveCount    int
+	TCPUserTimeout       time.Duration
+
 	// LogLevel: 0=disabled, 1=Error, 2=Warn, 3=Info, 4=Debug.
 	// Production: 1-2. Development: 3-4.
 	LogLevel int
@@ -121,11 +141,25 @@ type ReconnectConfig struct {
 	MaxBackoff time.Duration
 }
 
-const defaultKeepaliveInterval = 30 * time.Second
+const (
+	defaultKeepaliveInterval        = 30 * time.Second
+	defaultReceiveLoopTimeout         = 30 * time.Second
+	defaultConnectionLivenessTimeout  = 90 * time.Second
+)
 
 // DefaultKeepaliveInterval is the default app-level AIP Keepalive period.
 func DefaultKeepaliveInterval() time.Duration {
 	return defaultKeepaliveInterval
+}
+
+// DefaultReceiveLoopTimeout is the default per-iteration receive timeout in concurrent mode.
+func DefaultReceiveLoopTimeout() time.Duration {
+	return defaultReceiveLoopTimeout
+}
+
+// DefaultConnectionLivenessTimeout is the default pending-request liveness backstop.
+func DefaultConnectionLivenessTimeout() time.Duration {
+	return defaultConnectionLivenessTimeout
 }
 
 // GetKeepaliveInterval returns the configured keepalive interval, or the default
@@ -138,6 +172,22 @@ func (c *Config) GetKeepaliveInterval() time.Duration {
 		return defaultKeepaliveInterval
 	}
 	return c.KeepaliveInterval
+}
+
+// GetReceiveLoopTimeout returns the configured receive-loop timeout or the default.
+func (c *Config) GetReceiveLoopTimeout() time.Duration {
+	if c.ReceiveLoopTimeout <= 0 {
+		return defaultReceiveLoopTimeout
+	}
+	return c.ReceiveLoopTimeout
+}
+
+// GetConnectionLivenessTimeout returns the configured liveness backstop or the default.
+func (c *Config) GetConnectionLivenessTimeout() time.Duration {
+	if c.ConnectionLivenessTimeout <= 0 {
+		return defaultConnectionLivenessTimeout
+	}
+	return c.ConnectionLivenessTimeout
 }
 
 // DefaultReconnectConfig returns the default reconnection configuration.

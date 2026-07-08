@@ -215,22 +215,24 @@ func NewClient(ctx context.Context, cfg config.Config) (*Client, error) {
 	// Create unique key for this client
 	key := getClientKey(cfg.ClientName, cfg.GatewayActorName)
 
-	// Check if client already exists (with write lock to prevent race conditions)
-	registryMu.Lock()
-	if existingClient, exists := clientRegistry[key]; exists {
-		registryMu.Unlock()
-		// Verify existing client is still connected
-		if existingClient.IsConnected() {
-			logger.Info("returning existing client", "key", key)
-			return existingClient, nil
-		}
-		// Client exists but is not connected, remove it and create a new one
-		logger.Info("existing client not connected, creating new one", "key", key)
+	if !cfg.SkipGlobalRegistry {
+		// Check if client already exists (with write lock to prevent race conditions)
 		registryMu.Lock()
-		delete(clientRegistry, key)
-		registryMu.Unlock()
-	} else {
-		registryMu.Unlock()
+		if existingClient, exists := clientRegistry[key]; exists {
+			registryMu.Unlock()
+			// Verify existing client is still connected
+			if existingClient.IsConnected() {
+				logger.Info("returning existing client", "key", key)
+				return existingClient, nil
+			}
+			// Client exists but is not connected, remove it and create a new one
+			logger.Info("existing client not connected, creating new one", "key", key)
+			registryMu.Lock()
+			delete(clientRegistry, key)
+			registryMu.Unlock()
+		} else {
+			registryMu.Unlock()
+		}
 	}
 
 	// Create retry configuration
@@ -244,13 +246,17 @@ func NewClient(ctx context.Context, cfg config.Config) (*Client, error) {
 
 	// Create connection client
 	clientConfig := connection.ClientConfig{
-		TracerName:     cfg.TracerName,
-		Tracer:         cfg.Tracer,
-		Logger:         logger,
-		WireHook:       cfg.WireHook,
-		DialTimeout:    cfg.DialTimeout,
-		SendTimeout:    cfg.SendTimeout,
-		ReceiveTimeout: cfg.ReceiveTimeout,
+		TracerName:           cfg.TracerName,
+		Tracer:               cfg.Tracer,
+		Logger:               logger,
+		WireHook:             cfg.WireHook,
+		DialTimeout:          cfg.DialTimeout,
+		SendTimeout:          cfg.SendTimeout,
+		ReceiveTimeout:       cfg.ReceiveTimeout,
+		TCPKeepAliveIdle:     cfg.TCPKeepAliveIdle,
+		TCPKeepAliveInterval: cfg.TCPKeepAliveInterval,
+		TCPKeepAliveCount:    cfg.TCPKeepAliveCount,
+		TCPUserTimeout:       cfg.TCPUserTimeout,
 	}
 
 	conn := connection.NewClient(ctx, clientConfig, cfg.Network, cfg.Host, cfg.Port, cfg.GatewayActorName, retry)
@@ -456,6 +462,15 @@ func NewClient(ctx context.Context, cfg config.Config) (*Client, error) {
 		client.unmatchedHandler = cfg.UnmatchedMessageHandler
 	}
 
+	if cfg.SkipGlobalRegistry {
+		if cfg.EnableConcurrentMode {
+			client.StartReceiver()
+		}
+		client.startKeepaliveLoop()
+		logger.Info("created unregistered client (warm-pool standby)", "key", key)
+		return client, nil
+	}
+
 	// Register the new client (double-check to prevent race conditions)
 	registryMu.Lock()
 	// Check again in case another goroutine created the client while we were creating ours
@@ -501,6 +516,20 @@ func NewClient(ctx context.Context, cfg config.Config) (*Client, error) {
 	client.startKeepaliveLoop()
 
 	return client, nil
+}
+
+func (c *Client) receiveLoopTimeout() time.Duration {
+	if c == nil {
+		return receiveLoopTimeout
+	}
+	return c.cfg.GetReceiveLoopTimeout()
+}
+
+func (c *Client) connectionLivenessTimeout() time.Duration {
+	if c == nil {
+		return connectionLivenessTimeout
+	}
+	return c.cfg.GetConnectionLivenessTimeout()
 }
 
 // SendMessage sends a message to a Pod-OS actor and returns the response.
@@ -819,7 +848,8 @@ func (c *Client) receiveLoop() {
 
 		// Receive with a timeout to allow checking for shutdown and to enforce
 		// the liveness deadline.
-		receiveCtx, cancel := context.WithTimeout(c.receiverCtx, receiveLoopTimeout)
+		loopTimeout := c.receiveLoopTimeout()
+		receiveCtx, cancel := context.WithTimeout(c.receiverCtx, loopTimeout)
 		dbgRecvStart := time.Now() // #region agent log #endregion
 		_, responseBytes, receiveErr := c.conn.Receive(receiveCtx)
 		cancel()
@@ -832,7 +862,7 @@ func (c *Client) receiveLoop() {
 		}
 		// A single Receive that blocks far past the receiveLoopTimeout proves the
 		// read deadline is not being enforced on this socket.
-		if dbgElapsed > 2*receiveLoopTimeout {
+		if dbgElapsed > 2*loopTimeout {
 			debuglog.Log("H-F", "client.go:receiveLoop.slow", "Receive exceeded 2x timeout", map[string]any{
 				"elapsedMs": dbgElapsed.Milliseconds(), "outcome": dbgLastOutcome,
 				"pendingCount": c.pendingCount(),
@@ -854,7 +884,7 @@ func (c *Client) receiveLoop() {
 				debuglog.Log("H-B", "client.go:receiveLoop.err", "receive error classified", map[string]any{
 					"isIdleTimeout": isIdle, "isConnLost": gatewayerrors.IsConnectionLost(receiveErr),
 					"pendingCount": pc, "sinceLastActivityMs": idleMs,
-					"livenessThresholdMs": connectionLivenessTimeout.Milliseconds(),
+					"livenessThresholdMs": c.connectionLivenessTimeout().Milliseconds(),
 					"err":                 receiveErr.Error(),
 				})
 			}
@@ -864,7 +894,7 @@ func (c *Client) receiveLoop() {
 			// still considered healthy. Continue UNLESS we have pending requests
 			// and have heard nothing for too long (liveness backstop).
 			if gatewayerrors.IsIdleTimeout(receiveErr) {
-				if c.pendingCount() == 0 || time.Since(lastActivity) <= connectionLivenessTimeout {
+				if c.pendingCount() == 0 || time.Since(lastActivity) <= c.connectionLivenessTimeout() {
 					continue
 				}
 				c.logger.Error("liveness timeout: pending requests with no frames received; treating connection as dead",
