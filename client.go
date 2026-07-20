@@ -689,6 +689,59 @@ func (c *Client) sendKeepalive() error {
 	return nil
 }
 
+func (c *Client) buildDisconnectMessage() *message.Message {
+	return &message.Message{
+		Envelope: message.Envelope{
+			To:         "$system@" + c.gatewayActorName,
+			From:       c.FromAddress(),
+			Intent:     message.IntentType.GatewayDisconnect,
+			ClientName: c.clientName,
+			MessageId:  uuid.New().String(),
+		},
+	}
+}
+
+func (c *Client) encodeDisconnect() ([]byte, error) {
+	msg := c.buildDisconnectMessage()
+	socketMsg, err := message.EncodeMessage(msg, uuid.New().String())
+	if err != nil {
+		return nil, err
+	}
+	return socketMsg.MessageBytes, nil
+}
+
+// sendDisconnect sends a fire-and-forget GatewayDisconnect on the primary connection.
+// Best-effort: callers should continue closing even when this returns an error.
+func (c *Client) sendDisconnect() error {
+	if c.conn == nil || !c.conn.IsConnected() {
+		return nil
+	}
+	wire, err := c.encodeDisconnect()
+	if err != nil {
+		return fmt.Errorf("encode disconnect: %w", err)
+	}
+
+	c.sendMu.Lock()
+	defer c.sendMu.Unlock()
+
+	if c.conn == nil || !c.conn.IsConnected() {
+		return nil
+	}
+
+	sent, sendErr := c.conn.Send(wire)
+	if sendErr != nil {
+		return fmt.Errorf("failed to send disconnect: %w", convertGatewayError(sendErr))
+	}
+	if sent == 0 {
+		return fmt.Errorf("failed to send disconnect: no bytes sent")
+	}
+
+	if c.logger.Enabled(log.LevelDebug) {
+		c.logger.Debug("sent disconnect", "bytes", sent, "actor", c.gatewayActorName)
+	}
+	return nil
+}
+
 func (c *Client) sendPoolKeepalives() {
 	wire, err := c.encodeKeepalive()
 	if err != nil {
@@ -1696,6 +1749,9 @@ func (c *Client) Close() error {
 		c.pool.Close()
 	}
 	if c.conn != nil {
+		if err := c.sendDisconnect(); err != nil {
+			c.logger.Warn("failed to send GatewayDisconnect before close", "error", err, "actor", c.gatewayActorName)
+		}
 		c.conn.Close()
 	}
 	return nil

@@ -180,6 +180,10 @@ When `ReconnectConfig` is enabled (the default), the client automatically handle
 - **`SendControlMessage` does not wait** — Control messages are fire-and-forget and will fail immediately if the connection is down.
 - **`Close()` prevents reconnect** — After `Close` returns the client will never attempt to reconnect, and any in-flight `waitForReconnect` callers are unblocked.
 
+### Graceful Disconnect
+
+Prefer `Close()` over dropping the process without teardown. On explicit close, the client sends a fire-and-forget AIP `GatewayDisconnect` frame (message_type 6) on the ID-authenticated primary connection, then closes the TCP socket. Unexpected connection loss and reconnect teardown do not send Disconnect. Unauthenticated pool sockets are closed without Disconnect because they never completed a GatewayId handshake.
+
 ### Observing Connection State
 
 Register a callback to be notified of every connection state transition:

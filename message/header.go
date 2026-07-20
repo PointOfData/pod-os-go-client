@@ -38,6 +38,9 @@ func ConstructHeader(msg *Message, intent Intent, connectionIdUuid string) strin
 	case "GatewayStreamOn": // Stream On
 		return GatewayStreamOnHeader(msg) // VERIFIED: DO NOT CHANGE
 
+	case "GatewayDisconnect": // Disconnect
+		return GatewayDisconnectHeader(msg)
+
 	case "ActorEcho": // Echo Message
 		return ActorEchoHeader(msg) // VERIFIED: DO NOT CHANGE
 
@@ -133,6 +136,15 @@ func ActorHaltHeader(msg *Message) string {
 // Returns: string for header
 // VERIFIED: DO NOT CHANGE FUNCTION SIGNATURE OR PARAMETERS
 func GatewayStreamOnHeader(msg *Message) string {
+	var _header strings.Builder
+	if msg.MessageId != "" {
+		_header.WriteString("_msg_id=" + msg.MessageId)
+	}
+	return _header.String()
+}
+
+// GatewayDisconnectHeader notifies the Gateway that the client is disconnecting.
+func GatewayDisconnectHeader(msg *Message) string {
 	var _header strings.Builder
 	if msg.MessageId != "" {
 		_header.WriteString("_msg_id=" + msg.MessageId)
