@@ -211,9 +211,13 @@ The client sends periodic AIP `Keepalive` frames (message_type 18) on every conn
 
 | Field | Default | Description |
 |---|---|---|
-| `KeepaliveInterval` | `30s` | Interval between keepalive frames. Set to `0` or negative to disable. |
+| `KeepaliveInterval` | `30s` | Interval between keepalive frames. Set to negative to disable. |
 
 Keepalive uses envelope-only routing: `To=$system@<gateway>`, `From=<clientName>@<gateway>`. The loop starts after the GatewayId handshake, pauses while disconnected or reconnecting, and stops on `Close()`. When a connection pool is configured, idle pooled connections are pinged as well; checked-out connections are skipped.
+
+## Connection Liveness
+
+In concurrent mode the receive loop polls with a short idle timeout (default **30s**). Idle timeouts are benign — the connection is still considered healthy. If requests are pending but no frame has been received for `ConnectionLivenessTimeout` (default **90s**), the connection is declared dead and reconnect runs when enabled. Set `ConnectionLivenessTimeout` to a negative duration to disable this backstop.
 
 ## Actor Health Checks (Non-Neural Memory Actors)
 
