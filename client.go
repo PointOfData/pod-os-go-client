@@ -947,7 +947,8 @@ func (c *Client) receiveLoop() {
 			// still considered healthy. Continue UNLESS we have pending requests
 			// and have heard nothing for too long (liveness backstop).
 			if gatewayerrors.IsIdleTimeout(receiveErr) {
-				if c.pendingCount() == 0 || time.Since(lastActivity) <= c.connectionLivenessTimeout() {
+				liveness := c.connectionLivenessTimeout()
+				if liveness == 0 || c.pendingCount() == 0 || time.Since(lastActivity) <= liveness {
 					continue
 				}
 				c.logger.Error("liveness timeout: pending requests with no frames received; treating connection as dead",

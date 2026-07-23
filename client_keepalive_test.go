@@ -71,3 +71,27 @@ func TestStartKeepaliveLoopDisabled(t *testing.T) {
 	c.startKeepaliveLoop()
 	c.keepaliveWg.Wait() // would deadlock if goroutine started
 }
+
+func TestConfigGetConnectionLivenessTimeout(t *testing.T) {
+	t.Parallel()
+
+	defaultTimeout := config.DefaultConnectionLivenessTimeout()
+	if defaultTimeout != 90*time.Second {
+		t.Fatalf("DefaultConnectionLivenessTimeout() = %v, want 90s", defaultTimeout)
+	}
+
+	var cfg config.Config
+	if got := cfg.GetConnectionLivenessTimeout(); got != 90*time.Second {
+		t.Fatalf("unset GetConnectionLivenessTimeout() = %v, want 90s", got)
+	}
+
+	cfg.ConnectionLivenessTimeout = 15 * time.Second
+	if got := cfg.GetConnectionLivenessTimeout(); got != 15*time.Second {
+		t.Fatalf("custom GetConnectionLivenessTimeout() = %v, want 15s", got)
+	}
+
+	cfg.ConnectionLivenessTimeout = -1
+	if got := cfg.GetConnectionLivenessTimeout(); got != 0 {
+		t.Fatalf("disabled GetConnectionLivenessTimeout() = %v, want 0", got)
+	}
+}

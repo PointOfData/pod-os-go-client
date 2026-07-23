@@ -70,7 +70,7 @@ type Config struct {
 
 	// ConnectionLivenessTimeout is the liveness backstop: if requests are pending
 	// but no frame has been received for this long, the connection is declared dead.
-	// When unset (zero), defaults to 90 seconds.
+	// When unset (zero), defaults to 90 seconds. Negative disables the backstop.
 	ConnectionLivenessTimeout time.Duration
 
 	// TCP keepalive tuning for the underlying transport (see connection.ClientConfig).
@@ -183,8 +183,12 @@ func (c *Config) GetReceiveLoopTimeout() time.Duration {
 }
 
 // GetConnectionLivenessTimeout returns the configured liveness backstop or the default.
+// Returns zero when the backstop is explicitly disabled (negative value).
 func (c *Config) GetConnectionLivenessTimeout() time.Duration {
-	if c.ConnectionLivenessTimeout <= 0 {
+	if c.ConnectionLivenessTimeout < 0 {
+		return 0
+	}
+	if c.ConnectionLivenessTimeout == 0 {
 		return defaultConnectionLivenessTimeout
 	}
 	return c.ConnectionLivenessTimeout
