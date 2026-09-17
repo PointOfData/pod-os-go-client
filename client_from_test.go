@@ -18,7 +18,7 @@ func TestClientFromAddress(t *testing.T) {
 	}
 }
 
-func TestNormalizeMessageFromUsesConnectionGateway(t *testing.T) {
+func TestNormalizeMessageFromRejectsDisagreeingFrom(t *testing.T) {
 	c := &Client{
 		clientName:       "my-client",
 		gatewayActorName: "zeroth.pod-os.com",
@@ -34,13 +34,9 @@ func TestNormalizeMessageFromUsesConnectionGateway(t *testing.T) {
 		},
 	}
 
-	c.normalizeMessageFrom(msg)
-
-	if msg.ClientName != "my-client" {
-		t.Fatalf("ClientName = %q, want my-client", msg.ClientName)
-	}
-	if msg.From != "my-client@zeroth.pod-os.com" {
-		t.Fatalf("From = %q, want my-client@zeroth.pod-os.com", msg.From)
+	err := c.normalizeMessageFrom(msg)
+	if err == nil {
+		t.Fatal("expected error when From disagrees with connection identity")
 	}
 }
 
@@ -58,7 +54,9 @@ func TestNormalizeMessageFromEmptyFrom(t *testing.T) {
 		},
 	}
 
-	c.normalizeMessageFrom(msg)
+	if err := c.normalizeMessageFrom(msg); err != nil {
+		t.Fatalf("normalizeMessageFrom() error = %v", err)
+	}
 
 	if msg.From != "my-client@skills.pod-os.com" {
 		t.Fatalf("From = %q, want my-client@skills.pod-os.com", msg.From)

@@ -374,6 +374,8 @@ Clauses are evaluated in the order they appear in the search specification.
 
 #### Example 1: Basic GetEventsForTags Request
 
+**Important:** the search clause goes in `Payload.Data`, not `NeuralMemory.Search` (`SearchOptions` is not serialized on the wire).
+
 ```go
 msg := &message.Message{
     Envelope: message.Envelope{
@@ -383,18 +385,14 @@ msg := &message.Message{
         ClientName: "MyClient",
         MessageId:  uuid.New().String(),
     },
+    Payload: &message.PayloadFields{
+        Data: "clause_type:S\tboolean:or\tlow:action=click",
+    },
     NeuralMemory: &message.NeuralMemoryFields{
-        // Search configuration with clause specification
-        Search: &message.SearchOptions{
-            // Search for all events tagged with key="action" and value="click"
-            Clause:        "clause_type:S\tboolean:or\tlow:action=click",
-            BufferResults: true,  // Buffer all results in single reply payload
-            BufferFormat:  "0",   // Output format (0 = text, 1 = JSON)
-        },
         GetEventsForTags: &message.GetEventsForTagsOptions{
-            BufferResults:   true,   // Buffer all results in single reply
-            IncludeTagStats: true,   // Return tag stats per tag in results
-            BufferFormat:    "0",    // Output format
+            BufferResults:   true,
+            IncludeTagStats: true,
+            BufferFormat:    "0",
         },
     },
 }
@@ -411,16 +409,11 @@ msg := &message.Message{
         ClientName: "MyClient",
         MessageId:  uuid.New().String(),
     },
+    Payload: &message.PayloadFields{
+        Data: "clause_type:S\tboolean:or\tlow:action=click\n" +
+            "clause_type:S\tboolean:and\tlow:user=*",
+    },
     NeuralMemory: &message.NeuralMemoryFields{
-        Search: &message.SearchOptions{
-            // Multi-clause search: find events with "action=click" AND "user=*"
-            Clause: "clause_type:S\tboolean:or\tlow:action=click\n" +
-                    "clause_type:S\tboolean:and\tlow:user=*",
-            BufferResults:   true,
-            IncludeTagStats: true,
-            HitTagFilter:    "^(action|user)=",  // Filter result tags
-            BufferFormat:    "0",
-        },
         GetEventsForTags: &message.GetEventsForTagsOptions{
             // Event filtering
             EventPattern:     "2024.*",           // Filter events by key pattern
@@ -513,14 +506,13 @@ msg := &message.Message{
         ClientName: "MyClient",
         MessageId:  uuid.New().String(),
     },
+    Payload: &message.PayloadFields{
+        Data: clauses.String(),
+    },
     NeuralMemory: &message.NeuralMemoryFields{
-        Search: &message.SearchOptions{
-            Clause:        clauses.String(),
-            BufferResults: true,
-            BufferFormat:  "0",
-        },
         GetEventsForTags: &message.GetEventsForTagsOptions{
             BufferResults: true,
+            BufferFormat:  "0",
         },
     },
 }
@@ -672,3 +664,17 @@ responseMsg := &message.Message{
 // Helper function to parse the payload:
 // tags := message.ParseTagsFromPayload(string(responseMsg.Payload.Data.([]byte)))
 ```
+
+## Integration notes
+
+### Pagination (`end_result`)
+
+`start_result` / `end_result` slice results in **storage order**, not relevance order. For ranking, fetch the full candidate set and re-rank client-side.
+
+### `_hits` is not a relevance score
+
+`_hits` includes stored term frequency. Re-rank on distinct matched keys, then IDF-weighted frequency — do not sort on `_hits` alone.
+
+### Concurrency
+
+Keep roughly **8–10 concurrent** requests per actor connection. Higher fan-out can cause silent timeouts.

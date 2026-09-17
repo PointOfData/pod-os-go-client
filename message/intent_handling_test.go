@@ -506,7 +506,7 @@ func TestFormatBatchEventsPayload(t *testing.T) {
 	}
 
 	// First line should contain tag
-	if !strings.Contains(lines[0], "tag_0=1:key1=value1") {
+	if !strings.Contains(lines[0], "tag_1=1:key1=value1") {
 		t.Errorf("FormatBatchEventsPayload() first line missing tag: %s", lines[0])
 	}
 }

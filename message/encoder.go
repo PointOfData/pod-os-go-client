@@ -263,7 +263,8 @@ func FormatBatchTagsPayload(tags TagList) string {
 }
 
 // formatTagsForBatchPayload formats tags for batch event payload
-// Tag Format: tag_0=freq:key=value <tab> tag_1=freq:key=value ...
+// Tag Format: tag_1=freq:key=value <tab> tag_2=freq:key=value ...
+// Batch payload tags are 1-indexed (same as header tags). tag_0 is dropped by the actor.
 // The tag Value is serialized using SerializeTagValue() to support any type.
 func formatTagsForBatchPayload(tags TagList) string {
 	if len(tags) == 0 {
@@ -271,7 +272,7 @@ func formatTagsForBatchPayload(tags TagList) string {
 	}
 	tagFields := make([]string, 0, len(tags))
 	for i, tag := range tags {
-		uniqueTagId := fmt.Sprintf("tag_%d", i)
+		uniqueTagId := fmt.Sprintf("tag_%d", i+1)
 		tagField := fmt.Sprintf("%s=%d:%s=%s", uniqueTagId, tag.Frequency, tag.Key, SerializeTagValue(tag.Value))
 		tagFields = append(tagFields, tagField)
 	}

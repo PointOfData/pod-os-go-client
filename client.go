@@ -541,7 +541,9 @@ func (c *Client) connectionLivenessTimeout() time.Duration {
 // uses MessageId correlation to route responses to the correct caller, allowing
 // multiple goroutines to send messages simultaneously.
 func (c *Client) SendMessage(ctx context.Context, msg *message.Message) (*message.Message, error) {
-	c.normalizeMessageFrom(msg)
+	if err := c.normalizeMessageFrom(msg); err != nil {
+		return nil, err
+	}
 
 	// Ensure MessageId exists for potential correlation
 	if msg.MessageId == "" {
@@ -558,7 +560,9 @@ func (c *Client) SendMessage(ctx context.Context, msg *message.Message) (*messag
 // SendMessageWithRaw sends a message and returns both the decoded response and the raw wire bytes.
 // Use this when the caller needs to display or log the undecoded server response (e.g. for a "Raw" tab).
 func (c *Client) SendMessageWithRaw(ctx context.Context, msg *message.Message) (*message.Message, []byte, error) {
-	c.normalizeMessageFrom(msg)
+	if err := c.normalizeMessageFrom(msg); err != nil {
+		return nil, nil, err
+	}
 	if msg.MessageId == "" {
 		msg.MessageId = uuid.New().String()
 	}
@@ -1505,7 +1509,7 @@ func (c *Client) sendMessageWithCorrelation(ctx context.Context, msg *message.Me
 			"connected": c.conn.IsConnected(), "pendingCount": c.pendingCount(),
 		})
 		// #endregion
-		return nil, fmt.Errorf("request to %s timed out waiting for response [MessageId: %s]: %w", c.gatewayActorName, messageId, ctx.Err())
+		return nil, fmt.Errorf("request to %s timed out waiting for response [MessageId: %s]: %w%s", c.gatewayActorName, messageId, ctx.Err(), ReplyRoutingTimeoutHint)
 	}
 }
 
@@ -1704,7 +1708,7 @@ func (c *Client) sendMessageWithCorrelationRaw(ctx context.Context, msg *message
 		}
 		return rawResp.Msg, rawResp.Raw, nil
 	case <-ctx.Done():
-		return nil, nil, fmt.Errorf("request to %s timed out waiting for response [MessageId: %s]: %w", c.gatewayActorName, messageId, ctx.Err())
+		return nil, nil, fmt.Errorf("request to %s timed out waiting for response [MessageId: %s]: %w%s", c.gatewayActorName, messageId, ctx.Err(), ReplyRoutingTimeoutHint)
 	}
 }
 
@@ -1802,18 +1806,20 @@ func (c *Client) FromAddress() string {
 
 // normalizeMessageFrom ensures ClientName and From use this connection's identity.
 // From always uses the connection gateway, not the routing target in To.
-func (c *Client) normalizeMessageFrom(msg *message.Message) {
+// A non-empty From that disagrees with FromAddress() is rejected (not silently rewritten).
+func (c *Client) normalizeMessageFrom(msg *message.Message) error {
 	if msg.ClientName != c.clientName {
 		c.logger.Info("updating message ClientName", "from", msg.ClientName, "to", c.clientName)
 		msg.ClientName = c.clientName
 	}
 	expectedFrom := c.FromAddress()
-	if msg.From != expectedFrom {
-		if msg.From != "" {
-			c.logger.Info("updating message From", "from", msg.From, "to", expectedFrom)
-		}
+	if msg.From != "" && msg.From != expectedFrom {
+		return fmt.Errorf("message From %q disagrees with connection identity %q; set Config.GatewayActorName to the dialed gateway FQN and leave From empty or equal to Client.FromAddress()", msg.From, expectedFrom)
+	}
+	if msg.From == "" {
 		msg.From = expectedFrom
 	}
+	return nil
 }
 
 // Conn returns the underlying connection.Client for direct socket operations.

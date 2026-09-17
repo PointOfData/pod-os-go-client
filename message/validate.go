@@ -551,6 +551,12 @@ func validateGetEventsForTags(m *Message) ValidationErrors {
 			`msg.NeuralMemory.GetEventsForTags = &message.GetEventsForTagsOptions{EventPattern: "my-key=my-value", BufferResults: true}`,
 			"message/types.go:GetEventsForTagsOptions"))
 	}
+	if m.NeuralMemory.Search != nil {
+		errs = append(errs, errorf("error", intent, "NeuralMemory.Search", "search", "not_serialized",
+			"SearchOptions is not serialized on the wire; put the search clause in Payload.Data.",
+			`msg.Payload = &message.PayloadFields{Data: "clause_type:S\tboolean:or\tlow:key=value"}`,
+			"message/types.go:SearchOptions"))
+	}
 	return errs
 }
 

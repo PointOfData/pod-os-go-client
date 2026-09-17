@@ -201,6 +201,7 @@ type GetEventsForTagsOptions struct {
 }
 
 // SearchOptions contains programmable search configuration.
+// Deprecated: not serialized on the wire. Put the search clause in Payload.Data for GetEventsForTags.
 type SearchOptions struct {
 	Clause             string // Search clause specification
 	Parameters         string // Search parameters

@@ -22,6 +22,53 @@ go get github.com/PointOfData/pod-os-go-client
 
 ## Quick Start
 
+### Connect to a hosted gateway
+
+1. Dial the **chosen** gateway's TCP endpoint (`host:62312`).
+2. Set `GatewayActorName` to **that gateway's FQN** (the connection gateway you dialed — any gateway you are permitted to use; not necessarily the actor's `@domain`).
+3. Use a unique `ClientName` per TCP connection. The SDK sets `From = ClientName@<dialed-gateway-FQN>` on every message (`client.FromAddress()`). Leave `From` empty or equal to `FromAddress()` — a mismatched `From` is rejected, not silently rewritten.
+4. Keep roughly **8–10 concurrent** ENM requests per connection; higher fan-out can time out silently.
+4. Omit `UserName` / `Passcode` unless that gateway's INI requires them. These are optional AIP fields, not Auth0 or dashboard OAuth tokens.
+5. If `GatewayId` succeeds but a request times out, the gateway likely could not route the reply — check unique `ClientName` and `From`. This is not an authentication failure.
+
+```go
+import (
+    "context"
+    "time"
+
+    "github.com/PointOfData/pod-os-go-client"
+    "github.com/PointOfData/pod-os-go-client/config"
+    "github.com/PointOfData/pod-os-go-client/message"
+    "github.com/google/uuid"
+)
+
+cfg := config.Config{
+    Host:             "gateway-nlb.example.com", // TCP dial target (LoadBalancer)
+    Port:             "62312",
+    GatewayActorName: "zeroth.customer.example.com", // FQN of the gateway you dialed
+    ClientName:       "my-app-" + uuid.NewString()[:8], // unique per connection
+}
+
+client, err := podos.NewClient(context.Background(), cfg)
+if err != nil {
+    log.Fatal(err)
+}
+defer client.Close()
+
+msg := &message.Message{
+    Envelope: message.Envelope{
+        To:     "Foobar@zeroth.customer.example.com",
+        From:   client.FromAddress(), // ClientName@<dialed-gateway-FQN>
+        Intent: message.IntentType.GetEvent,
+        ClientName: client.ClientName(),
+        MessageId: uuid.NewString(),
+    },
+    // ... intent fields ...
+}
+
+resp, err := client.SendMessage(context.Background(), msg)
+```
+
 ## Knowledge Base
 
 Access embedded Pod-OS documentation:
