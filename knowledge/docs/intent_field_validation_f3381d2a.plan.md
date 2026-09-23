@@ -291,9 +291,9 @@ Runtime-only constraints ("pre-existing in same database") are delivered as enri
 - `Event.PayloadData.MimeType` mapped to `mime` OPTIONAL
 - `Envelope.MessageId` mapped to `_msg_id` OPTIONAL
 {Tags}
-- `Tag.Frequency`, `Tag.Key`, `Tag.Value` mapped to `tag_i=freq:key=value\t` where i is the slice position and the tab-delimited tags are appended to each event
-- `Tag.Owner` mapped to tag owner OPTIONAL
-- `Tag.OwnerUniqueID` mapped to tag owner unique identifier OPTIONAL
+- `Tag.Frequency`, `Tag.Key`, `Tag.Value` mapped to `tag_N=freq:key=value\t` where N is **1-based** (first tag is `tag_1`, not `tag_0`; the actor silently drops `tag_0`) and tab-delimited tags are appended to each event
+- `Tag.Owner` mapped to tag `owner` OPTIONAL
+- `Tag.OwnerUniqueID` mapped to tag `owner_unique_id` OPTIONAL
 
 **StoreBatchEventsResponse**
 {Intent}
@@ -306,7 +306,7 @@ Runtime-only constraints ("pre-existing in same database") are delivered as enri
 - `Event` non-nil REQUIRED
 - `Event.Id` mapped from `_event_id` REQUIRED
 - `Event.LocalId` mapped from `_event_local_id` REQUIRED
-- `Event.UniqueId` mapped from `unique_id` OPTIONAL
+- `Event.UniqueId` mapped from `unique_id` OPTIONAL # BUG? should it be _unique_id?
 - `Event.Type` mapped from `_type` OPTIONAL
 - `Event.Owner` mapped from `_event_owner` REQUIRED
 - `Envelope.MessageId` mapped from `_msg_id` OPTIONAL
