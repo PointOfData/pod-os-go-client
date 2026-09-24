@@ -103,6 +103,13 @@ func (hb *HeaderBuilder) BuildGetEventHeader(msg *Message) string {
 				header.WriteString(socketName + "=" + socketValue + "\t")
 			}
 		}
+
+		switch opts.TagOwnerOutput {
+		case TagOwnerEventKey:
+			header.WriteString("output_tag_owner=Y\t")
+		case TagOwnerUniqueID:
+			header.WriteString("output_tag_owner=N\t")
+		}
 	}
 
 	// Add message ID (generate if not provided)
@@ -248,6 +255,13 @@ func (hb *HeaderBuilder) BuildGetEventsForTagsHeader(msg *Message) string {
 
 		if opts.InvertHitTagFilter {
 			header.WriteString("invert_hit_tag_filter=Y\t")
+		}
+
+		switch opts.TagOwnerOutput {
+		case TagOwnerEventKey:
+			header.WriteString("get_tag_owner=Y\t")
+		case TagOwnerUniqueID:
+			header.WriteString("get_tag_owner_unique_id=Y\t")
 		}
 
 		bufferFormat := opts.BufferFormat

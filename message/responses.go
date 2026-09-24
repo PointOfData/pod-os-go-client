@@ -61,7 +61,8 @@ func ParseTagsFromPayload(payload string) []TagOutput {
 // Uses single-pass indexing for O(N) complexity regardless of payload size.
 // The payload contains tab-separated field=value pairs, newline-terminated records.
 // Line types by prefix:
-//   - _event_id=: Event object with inline tags
+//   - _event_id=: Event object with inline tags (buffer_format=0)
+//   - _event_tag=: One tag of the event named by the field value (buffer_format=1)
 //   - _link=: Link between events (source field identifies parent event)
 //   - _linktag=: Tags for a link (first field is link ID)
 //   - _targettag=: Tags describing link's target event (first field is target ID)
@@ -72,7 +73,7 @@ func parseGetEventsForTagsPayload(msg *Message) (eventResults []EventFields, ok 
 		return nil, false
 	}
 
-	lines := strings.Split(payloadStr, "\n")
+	lines := strings.Split(normalizeTagOwnerLines(payloadStr), "\n")
 
 	// Check if this is a brief hits response by examining the first non-empty line.
 	// If _brief_hit exists, no other output types (_event_id, _link, _linktag, _targettag) are included.
@@ -114,6 +115,7 @@ func parseGetEventsForTagsPayload(msg *Message) (eventResults []EventFields, ok 
 
 	linkTagsMap := make(map[string][]TagOutput, estimatedEvents*2)
 	targetTagsMap := make(map[string][]TagOutput, estimatedEvents*2)
+	eventTagsMap := make(map[string][]TagOutput, estimatedEvents)
 
 	// SINGLE PASS: categorize and index all lines
 	for _, line := range lines {
@@ -129,6 +131,12 @@ func parseGetEventsForTagsPayload(msg *Message) (eventResults []EventFields, ok 
 			if eventId != "" && event != nil {
 				eventsMap[eventId] = event
 				eventOrder = append(eventOrder, eventId)
+			}
+
+		case strings.HasPrefix(line, "_event_tag="):
+			eventKey, tag := parseEventTagLine(line)
+			if eventKey != "" && tag != nil {
+				eventTagsMap[eventKey] = append(eventTagsMap[eventKey], *tag)
 			}
 
 		case strings.HasPrefix(line, "_link="):
@@ -162,6 +170,13 @@ func parseGetEventsForTagsPayload(msg *Message) (eventResults []EventFields, ok 
 		event := eventsMap[eventId]
 		if event == nil {
 			continue
+		}
+
+		if tags, exists := eventTagsMap[eventId]; exists {
+			event.Tags = append(event.Tags, tags...)
+			if event.UniqueId == "" {
+				event.UniqueId = uniqueIdFromTags(event.Tags)
+			}
 		}
 
 		// Get all links for this event via index
@@ -223,37 +238,43 @@ func parseEventIdLine(line string, msg *Message) (string, *EventFields) {
 		event.PayloadData.MimeType = mimetype
 	}
 
-	// Parse inline tags (tag:freq:key=value format)
-	for key, value := range recordMap {
-		if strings.HasPrefix(key, "tag:") {
-			parts := strings.Split(key, ":")
-			if len(parts) == 3 {
-				freq, _ := strconv.Atoi(parts[1])
-				event.Tags = append(event.Tags, TagOutput{
-					Frequency: freq,
-					Key:       parts[2],
-					Value:     value,
-				})
-			}
+	// Parse inline tags (tag:freq:key=value format) in wire order. The fields are read
+	// directly rather than from recordMap because tags sharing a key and frequency
+	// (e.g. tag:1:color=red and tag:1:color=blue) would collide in the map.
+	for _, field := range strings.Split(line, "\t") {
+		name, value, found := strings.Cut(field, "=")
+		if !found || !strings.HasPrefix(name, "tag:") {
+			continue
 		}
-		// Handle _event_tag format
-		if strings.HasPrefix(key, "_event_tag") {
-			tag := parseEventTagPayloadField(recordMap)
-			if tag != nil {
-				event.Tags = append(event.Tags, *tag)
-			}
+		parts := strings.Split(name, ":")
+		if len(parts) == 3 {
+			freq, _ := strconv.Atoi(parts[1])
+			event.Tags = append(event.Tags, TagOutput{
+				Frequency: freq,
+				Key:       parts[2],
+				Value:     value,
+			})
 		}
 	}
+	if _, exists := recordMap["_event_tag"]; exists {
+		event.Tags = append(event.Tags, *parseEventTagPayloadField(recordMap))
+	}
 
-	// Extract unique_id from tags if present
-	for _, tag := range event.Tags {
-		if tag.Key == "_unique_id" || tag.Key == "unique_id" {
-			event.UniqueId = tag.Value
-			break
-		}
+	if uniqueId := uniqueIdFromTags(event.Tags); uniqueId != "" {
+		event.UniqueId = uniqueId
 	}
 
 	return eventId, event
+}
+
+// uniqueIdFromTags returns the value of the _unique_id (or unique_id) tag, if present.
+func uniqueIdFromTags(tags []TagOutput) string {
+	for _, tag := range tags {
+		if tag.Key == "_unique_id" || tag.Key == "unique_id" {
+			return tag.Value
+		}
+	}
+	return ""
 }
 
 // parseBriefHitLine parses a _brief_hit line and adds it to msg.Response.BriefHits
@@ -396,34 +417,22 @@ func parseTabDelimitedLine(line string) map[string]string {
 	return recordMap
 }
 
-// parseEventTagPayloadField parses tag fields from GetEventsForTags payload record
-// Fields: _event_tag (Tag.Id), tag_freq (Tag.Frequency), tag_value (Tag.Key=Tag.Value), tag_timestamp
+// parseEventTagPayloadField parses tag fields from a GetEventsForTags buffer_format=1 record.
+// Fields: _event_tag (event key), tag_freq, tag_value (key=value), tag_timestamp, owner
+// (event key or unique ID, present with get_tag_owner / get_tag_owner_unique_id).
 func parseEventTagPayloadField(recordMap map[string]string) *TagOutput {
 	tag := &TagOutput{}
-
-	if tagId, exists := recordMap["_event_tag"]; exists {
-		// Tag ID is stored for reference but not in TagOutput
-		_ = tagId
-	}
 
 	if freqStr, exists := recordMap["tag_freq"]; exists {
 		if freq, err := strconv.Atoi(freqStr); err == nil {
 			tag.Frequency = freq
 		}
 	}
-
 	if tagValue, exists := recordMap["tag_value"]; exists {
-		eqIdx := strings.Index(tagValue, "=")
-		if eqIdx > 0 {
-			tag.Key = tagValue[:eqIdx]
-			tag.Value = tagValue[eqIdx+1:]
-		} else {
-			tag.Value = tagValue
-		}
+		tag.Key, tag.Value = splitTagKeyValue(tagValue)
 	}
-
-	// tag_timestamp is parsed but TagOutput doesn't have a Timestamp field
-	// If needed, it would be: tag.Timestamp = recordMap["tag_timestamp"]
+	tag.Timestamp = recordMap["tag_timestamp"]
+	tag.Owner = normalizeTagOwner(recordMap["owner"])
 
 	return tag
 }
@@ -696,47 +705,21 @@ func parseGetEventTargetTagLine(line string) (targetEventId string, tag *TagOutp
 }
 
 // parseEventTagField parses an event_tag field from GetEvent payload
-// Format: event_tag:nnnnnnnnn:f=key=value where f is frequency
+// Formats: event_tag:nnnnnnnnn:f=key=value (tag_format=0) and
+// event_tag:nnnnnnnnn:f:ssssssssss.uuuuuu[:owner_id]=key=value (tag_format=1)
 func parseEventTagField(field string) *TagOutput {
-	// Remove "event_tag:" prefix
-	remainder := strings.TrimPrefix(field, "event_tag:")
-
-	// Format: nnnnnnnnn:f=key=value
-	parts := strings.SplitN(remainder, ":", 2)
-	if len(parts) < 2 {
+	if !strings.HasPrefix(field, "event_tag:") {
+		field = "event_tag:" + field
+	}
+	name, value, found := strings.Cut(field, "=")
+	if !found {
 		return nil
 	}
-
-	// parts[0] is tag number (not needed for output)
-	// parts[1] is f=key=value
-
-	freqKeyValue := parts[1]
-	eqIdx := strings.Index(freqKeyValue, "=")
-	if eqIdx < 0 {
+	tag, ok := parseEventTagHeader(name, value)
+	if !ok {
 		return nil
 	}
-
-	freqStr := freqKeyValue[:eqIdx]
-	freq, err := strconv.Atoi(freqStr)
-	if err != nil {
-		freq = 1 // Default
-	}
-
-	// The rest is key=value
-	keyValue := freqKeyValue[eqIdx+1:]
-	keyEqIdx := strings.Index(keyValue, "=")
-	if keyEqIdx < 0 {
-		return &TagOutput{
-			Frequency: freq,
-			Value:     keyValue,
-		}
-	}
-
-	return &TagOutput{
-		Frequency: freq,
-		Key:       keyValue[:keyEqIdx],
-		Value:     keyValue[keyEqIdx+1:],
-	}
+	return &tag
 }
 
 // parseLinkTagFields parses link tag fields from payload

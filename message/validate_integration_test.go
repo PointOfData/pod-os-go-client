@@ -19,6 +19,7 @@ package message
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"strings"
@@ -52,14 +53,21 @@ func integrationAddr() string {
 }
 
 // integrationTo returns the NeuralMemory actor address for the test gateway.
-// Format: mem@<gatewayHost>
+// Format: mem@<gatewayHost>, or PODOS_TEST_TO when set (e.g. test@zeroth.pod-os.com when
+// PODOS_TEST_HOST is a LoadBalancer IP).
 func integrationTo() string {
+	if to := os.Getenv("PODOS_TEST_TO"); to != "" {
+		return to
+	}
 	return "mem@" + integrationHost()
 }
 
 // integrationFrom returns the test client address.
-// Format: test@<gatewayHost>
+// Format: test@<gatewayHost>, or PODOS_TEST_FROM when set.
 func integrationFrom() string {
+	if from := os.Getenv("PODOS_TEST_FROM"); from != "" {
+		return from
+	}
 	return "test@" + integrationHost()
 }
 
@@ -76,19 +84,27 @@ func dialGateway(t *testing.T) net.Conn {
 	return conn
 }
 
-// sendRaw writes raw bytes to conn and reads a response.
+// sendRaw writes raw bytes to conn and reads one complete response frame.
 func sendRaw(t *testing.T, conn net.Conn, raw []byte) []byte {
 	t.Helper()
 	conn.SetDeadline(time.Now().Add(10 * time.Second))
 	if _, err := conn.Write(raw); err != nil {
 		t.Fatalf("sendRaw: write error: %v", err)
 	}
-	buf := make([]byte, 64*1024)
-	n, err := conn.Read(buf)
-	if err != nil {
+	head := make([]byte, 9)
+	if _, err := io.ReadFull(conn, head); err != nil {
 		t.Fatalf("sendRaw: read error: %v", err)
 	}
-	return buf[:n]
+	total, err := decodeMessageSizeParam(head)
+	if err != nil || total < 9 {
+		t.Fatalf("sendRaw: bad frame length %q: %v", head, err)
+	}
+	frame := make([]byte, total)
+	copy(frame, head)
+	if _, err := io.ReadFull(conn, frame[9:]); err != nil {
+		t.Fatalf("sendRaw: read error: %v", err)
+	}
+	return frame
 }
 
 // encodeOrFail encodes a message and returns the wire bytes, failing the test on error.
@@ -540,6 +556,104 @@ func TestIntegration_Validate_GetEventsForTags(t *testing.T) {
 	}
 	if decoded.Response == nil {
 		t.Fatalf("GetEventsForTags response has nil Response")
+	}
+}
+
+// =============================================================================
+// INTEGRATION: tag_format=1 (GetEvent) and buffer_format=1 (GetEventsForTags)
+// =============================================================================
+
+func TestIntegration_TagFormats(t *testing.T) {
+	enableValidation(t)
+	conn := dialGateway(t)
+	clientName, _, _ := strings.Cut(integrationFrom(), "@")
+	sendRaw(t, conn, encodeOrFail(t, &Message{Envelope: Envelope{
+		To: integrationTo(), From: integrationFrom(), Intent: IntentType.GatewayId, ClientName: clientName,
+	}}))
+
+	sfx := fmt.Sprintf("%d", time.Now().UnixNano())
+	store := func(uid, owner string, tags TagList) string {
+		m := &Message{
+			Envelope:     Envelope{To: integrationTo(), From: integrationFrom(), Intent: IntentType.StoreEvent},
+			Event:        &EventFields{Owner: owner, UniqueId: uid, Location: "TERRA|47.6|-122.5", LocationSeparator: "|", Type: "tag_format_test"},
+			NeuralMemory: &NeuralMemoryFields{Tags: tags},
+		}
+		resp, err := DecodeMessage(sendRaw(t, conn, encodeOrFail(t, m)))
+		if err != nil || resp.Event == nil || resp.Event.Id == "" {
+			t.Fatalf("StoreEvent %s failed: %v", uid, err)
+		}
+		return resp.Event.Id
+	}
+	ownerUID := "tagfmt-owner-" + sfx
+	ownedUID := "tagfmt-owned-" + sfx
+	ownerId := store(ownerUID, "$sys", nil)
+	ownedId := store(ownedUID, ownerId, TagList{{Key: "tagfmt", Value: sfx, Frequency: 2}})
+
+	roundTrip := func(req *Message) *Message {
+		t.Helper()
+		if errs := req.Validate(); hasErrors(errs) {
+			t.Fatalf("Validate():\n%s", errs.Error())
+		}
+		raw := encodeOrFail(t, req)
+		if errs := ValidateRawMessage(raw); hasErrors(errs) {
+			t.Fatalf("ValidateRawMessage():\n%s", errs.Error())
+		}
+		resp, err := DecodeMessage(sendRaw(t, conn, raw))
+		if err != nil {
+			t.Fatalf("DecodeMessage(): %v", err)
+		}
+		ApplyTagOwnerOutput(req, resp)
+		return resp
+	}
+
+	t.Run("GetEvent tag_format=1", func(t *testing.T) {
+		resp := roundTrip(&Message{
+			Envelope: Envelope{To: integrationTo(), From: integrationFrom(), Intent: IntentType.GetEvent},
+			Event:    &EventFields{Id: ownedId},
+			NeuralMemory: &NeuralMemoryFields{GetEvent: &GetEventOptions{
+				GetTags: true, TagFormat: NullInt{Value: 1, Valid: true}, TagOwnerOutput: TagOwnerEventKey,
+			}},
+		})
+		tags := findTag(resp.Event.Tags, "tagfmt", sfx)
+		if len(tags) != 1 {
+			t.Fatalf("tagfmt tag not found in %d tags", len(resp.Event.Tags))
+		}
+		if tags[0].Frequency != 2 || tags[0].TagNumber == 0 {
+			t.Errorf("tag = %+v", tags[0])
+		}
+		if _, ok := tags[0].Time(); !ok {
+			t.Errorf("tag timestamp %q did not parse", tags[0].Timestamp)
+		}
+	})
+
+	for _, tc := range []struct {
+		owner TagOwnerOutput
+		want  func(TagOutput) string
+		value string
+	}{
+		{TagOwnerEventKey, func(tag TagOutput) string { return tag.Owner }, ownerId},
+		{TagOwnerUniqueID, func(tag TagOutput) string { return tag.OwnerUniqueID }, ownerUID},
+	} {
+		t.Run("GetEventsForTags buffer_format=1 owner="+string(tc.owner), func(t *testing.T) {
+			resp := roundTrip(&Message{
+				Envelope: Envelope{To: integrationTo(), From: integrationFrom(), Intent: IntentType.GetEventsForTags},
+				Payload:  &PayloadFields{Data: "clause_type:S\tboolean:or\tlow:tagfmt=" + sfx},
+				NeuralMemory: &NeuralMemoryFields{GetEventsForTags: &GetEventsForTagsOptions{
+					BufferResults: true, GetAllData: true, BufferFormat: "1", TagOwnerOutput: tc.owner,
+				}},
+			})
+			ev := eventByKey(t, resp, ownedId)
+			if ev.UniqueId != ownedUID {
+				t.Errorf("UniqueId = %q, want %q", ev.UniqueId, ownedUID)
+			}
+			tags := findTag(ev.Tags, "tagfmt", sfx)
+			if len(tags) != 1 {
+				t.Fatalf("tagfmt tag not found in %d tags", len(ev.Tags))
+			}
+			if tags[0].Timestamp == "" || tc.want(tags[0]) != tc.value {
+				t.Errorf("tag = %+v, want owner %q", tags[0], tc.value)
+			}
+		})
 	}
 }
 

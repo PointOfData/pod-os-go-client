@@ -348,8 +348,85 @@ responseMsg := &message.Message{
         },
     },
 }
+```
 
+### Tag Metadata: Storage Timestamps and Owners (tag_format=1 / buffer_format=1)
 
+By default, tags come back as frequency plus `key=value`. Both retrieval intents can also report, for each tag, **when it was stored** and **which event created it** (its owner). Both formats are opt-in.
+
+| Intent | Request option | Wire | Per-tag data added |
+|---|---|---|---|
+| GetEvent | `GetEventOptions.TagFormat = NullInt{Value: 1, Valid: true}` (with `GetTags: true`) | `tag_format=1` | `TagOutput.TagNumber`, `TagOutput.Timestamp`, owner when the server emits it |
+| GetEvent | `GetEventOptions.TagOwnerOutput = message.TagOwnerEventKey` / `TagOwnerUniqueID` | `output_tag_owner=Y` / `N` | owner as event key / unique ID |
+| GetEventsForTags | `GetEventsForTagsOptions.BufferFormat = "1"` | `buffer_format=1` | `TagOutput.Timestamp` (one `_event_tag` line per tag) |
+| GetEventsForTags | `GetEventsForTagsOptions.TagOwnerOutput = message.TagOwnerEventKey` / `TagOwnerUniqueID` | `get_tag_owner=Y` / `get_tag_owner_unique_id=Y` | owner as event key / unique ID |
+
+#### Rules:
+- Request tag metadata only when the task needs it: auditing or provenance ("who asserted this tag?"), recency ("which tags were added after T?"), or reconciling duplicate tags. It makes responses larger (roughly 3x for `buffer_format=1`).
+- `TagOwnerOutput` needs the matching format: `TagFormat=1` for GetEvent (validation error otherwise) and `BufferFormat="1"` for GetEventsForTags (validation warning otherwise).
+- `TagOwnerEventKey` fills `TagOutput.Owner` with the owning event's key. `TagOwnerUniqueID` fills `TagOutput.OwnerUniqueID` with the owning event's unique ID. The response doesn't say which form it carries, so `Client.SendMessage` remaps using the request. If you decode raw bytes with `message.DecodeMessage`, call `message.ApplyTagOwnerOutput(req, resp)`.
+- A tag with no owning event (for example one created under `$sys`) has an empty owner. Pod-OS sends `NULL` or the all-zero key `+0000000000.000000...` for these, and the SDK normalizes both to empty. An owner that has no unique ID is also empty under `TagOwnerUniqueID`.
+- `TagOutput.Timestamp` is the POSIX UTC time the tag was stored, `"ssssssssss.uuuuuu"`, not the event's timestamp. Use `tag.Time()` to get a `time.Time`.
+- GetEvent tags are ordered by `TagNumber`, the database tag counter.
+- Current Pod-OS builds leave the owner out of GetEvent `tag_format=1` output even when `output_tag_owner` is sent (verified live). Use GetEventsForTags with `BufferFormat="1"` when you need owners.
+
+#### Example: GetEvent with tag timestamps
+
+```go
+msg := &message.Message{
+    Envelope: message.Envelope{
+        To:     "mem@zeroth.example.com",
+        From:   "MyClient@zeroth.example.com",
+        Intent: message.IntentType.GetEvent,
+    },
+    Event: &message.EventFields{UniqueId: "order-1234"},
+    NeuralMemory: &message.NeuralMemoryFields{
+        GetEvent: &message.GetEventOptions{
+            GetTags:        true,
+            TagFormat:      message.NullInt{Value: 1, Valid: true},
+            TagOwnerOutput: message.TagOwnerEventKey,
+        },
+    },
+}
+resp, err := client.SendMessage(ctx, msg)
+// resp.Event.Tags[i]: TagOutput{TagNumber: 17, Frequency: 1, Key: "status", Value: "shipped",
+//                               Timestamp: "1790266973.722260", Owner: ""}
+```
+
+#### Example: GetEventsForTags with tag owners by unique ID
+
+```go
+msg := &message.Message{
+    Envelope: message.Envelope{
+        To:     "mem@zeroth.example.com",
+        From:   "MyClient@zeroth.example.com",
+        Intent: message.IntentType.GetEventsForTags,
+    },
+    Payload: &message.PayloadFields{Data: "clause_type:S\tboolean:or\tlow:status=shipped"},
+    NeuralMemory: &message.NeuralMemoryFields{
+        GetEventsForTags: &message.GetEventsForTagsOptions{
+            BufferResults:  true,
+            GetAllData:     true,
+            BufferFormat:   "1",
+            TagOwnerOutput: message.TagOwnerUniqueID,
+        },
+    },
+}
+resp, err := client.SendMessage(ctx, msg)
+for _, ev := range resp.Response.EventRecords {
+    for _, tag := range ev.Tags {
+        // tag.Timestamp = "1790266974.325930", tag.OwnerUniqueID = "warehouse-7" ("" when unowned)
+    }
+}
+```
+
+Wire format for `buffer_format=1` (one line per tag after each `_event_id` line):
+
+```
+_event_tag=<event key>	tag_freq=5	tag_value=size=large	tag_timestamp=1790266974.325930	owner=<event key or unique ID>
+```
+
+The SDK also handles a server quirk where the `owner` field is written after the line's newline. Always use the decoder rather than parsing these lines by hand.
 
 ### Get Events using Tag search (Events Matching Tags)
 Used to retrieve Events [GetEventsForTags Intent type] that match the Tag search parameters.

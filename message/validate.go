@@ -531,7 +531,97 @@ func validateGetEvent(m *Message) ValidationErrors {
 			"message/types.go:EventFields", "message/header.go:GetEventMessageHeader"))
 	}
 	errs = append(errs, validateLookupOwnerNotUsedEvent(intent, m.Event)...)
+	errs = append(errs, validateGetEventTagFormat(intent, m.GetEventOpts())...)
 	return errs
+}
+
+// validateTagOwnerOutputValue rejects TagOwnerOutput values other than the declared constants.
+func validateTagOwnerOutputValue(intent, field, wireField string, v TagOwnerOutput) ValidationErrors {
+	switch v {
+	case TagOwnerNone, TagOwnerEventKey, TagOwnerUniqueID:
+		return nil
+	}
+	return ValidationErrors{errorf("error", intent, field, wireField, "format",
+		fmt.Sprintf("%s %q is not a valid TagOwnerOutput.", field, string(v)),
+		"Use message.TagOwnerEventKey, message.TagOwnerUniqueID, or leave it unset.",
+		`opts.TagOwnerOutput = message.TagOwnerEventKey`,
+		"message/types.go:TagOwnerOutput")}
+}
+
+func validateGetEventTagFormat(intent string, opts *GetEventOptions) ValidationErrors {
+	if opts == nil {
+		return nil
+	}
+	var errs ValidationErrors
+	const tfField = "NeuralMemory.GetEvent.TagFormat"
+	const ownerField = "NeuralMemory.GetEvent.TagOwnerOutput"
+
+	if opts.TagFormat.Valid && opts.TagFormat.Value != 0 && opts.TagFormat.Value != 1 {
+		errs = append(errs, errorf("error", intent, tfField, "tag_format", "format",
+			fmt.Sprintf("tag_format must be 0 or 1; got %d.", opts.TagFormat.Value),
+			"Set TagFormat to 1 for per-tag timestamps and owners, or leave it unset for the default format 0.",
+			`msg.NeuralMemory.GetEvent.TagFormat = message.NullInt{Value: 1, Valid: true}`,
+			"message/types.go:GetEventOptions.TagFormat"))
+	}
+	errs = append(errs, validateTagOwnerOutputValue(intent, ownerField, "output_tag_owner", opts.TagOwnerOutput)...)
+
+	tagFormat1 := opts.TagFormat.Valid && opts.TagFormat.Value == 1
+	if opts.TagOwnerOutput != TagOwnerNone && !tagFormat1 {
+		errs = append(errs, semanticError(intent, ownerField, "output_tag_owner",
+			"TagOwnerOutput only applies to tag_format=1; with tag_format=0 no owners are returned.",
+			"Set TagFormat to 1 alongside TagOwnerOutput.",
+			`msg.NeuralMemory.GetEvent.TagFormat = message.NullInt{Value: 1, Valid: true}`,
+			"message/types.go:GetEventOptions.TagOwnerOutput", "message/header.go:GetEventMessageHeader"))
+	}
+	if tagFormat1 && !opts.GetTags {
+		errs = append(errs, errorf("warn", intent, tfField, "tag_format", "semantic",
+			"TagFormat=1 only changes how tags are returned, but GetTags is false so no tags are requested.",
+			"Set GetTags to true.",
+			`msg.NeuralMemory.GetEvent.GetTags = true`,
+			"message/types.go:GetEventOptions.GetTags"))
+	}
+	return errs
+}
+
+func validateGetEventsForTagsTagFormat(intent string, opts *GetEventsForTagsOptions) ValidationErrors {
+	if opts == nil {
+		return nil
+	}
+	var errs ValidationErrors
+	const bfField = "NeuralMemory.GetEventsForTags.BufferFormat"
+	const ownerField = "NeuralMemory.GetEventsForTags.TagOwnerOutput"
+
+	switch opts.BufferFormat {
+	case "", "0", "1":
+	default:
+		errs = append(errs, errorf("error", intent, bfField, "buffer_format", "format",
+			fmt.Sprintf("buffer_format must be \"0\" or \"1\"; got %q.", opts.BufferFormat),
+			"Set BufferFormat to \"1\" for one line per tag with timestamps and owners, or \"0\" (default) for inline tags.",
+			`msg.NeuralMemory.GetEventsForTags.BufferFormat = "1"`,
+			"message/types.go:GetEventsForTagsOptions.BufferFormat"))
+	}
+	errs = append(errs, validateTagOwnerOutputValue(intent, ownerField, "get_tag_owner / get_tag_owner_unique_id", opts.TagOwnerOutput)...)
+
+	if opts.TagOwnerOutput != TagOwnerNone && opts.BufferFormat != "1" {
+		errs = append(errs, errorf("warn", intent, ownerField, "get_tag_owner / get_tag_owner_unique_id", "semantic",
+			"TagOwnerOutput only applies to buffer_format=1; with buffer_format=0 no owners are returned.",
+			"Set BufferFormat to \"1\" alongside TagOwnerOutput.",
+			`msg.NeuralMemory.GetEventsForTags.BufferFormat = "1"`,
+			"message/types.go:GetEventsForTagsOptions.TagOwnerOutput", "message/header.go:GetEventsForTagMessageHeader"))
+	}
+	return errs
+}
+
+// validateWireYN reports a header flag whose value is present but not Y or N.
+func validateWireYN(h map[string]string, key, field, code, ref string) ValidationErrors {
+	v, ok := h[key]
+	if !ok || v == "Y" || v == "N" {
+		return nil
+	}
+	return ValidationErrors{errorf("error", "wire", field, key, "header_value",
+		fmt.Sprintf("%s must be Y or N; got %q. A bare flag without =Y is ignored by Pod-OS.", key, v),
+		fmt.Sprintf("Send %s=Y (set %s).", key, field),
+		code, ref)}
 }
 
 func validateGetEventsForTags(m *Message) ValidationErrors {
@@ -557,6 +647,7 @@ func validateGetEventsForTags(m *Message) ValidationErrors {
 			`msg.Payload = &message.PayloadFields{Data: "clause_type:S\tboolean:or\tlow:key=value"}`,
 			"message/types.go:SearchOptions"))
 	}
+	errs = append(errs, validateGetEventsForTagsTagFormat(intent, m.NeuralMemory.GetEventsForTags)...)
 	return errs
 }
 
@@ -1414,8 +1505,44 @@ func validateNeuralMemoryRequestHeader(cmd string, h map[string]string, payloadL
 				`msg.Event.Id = "2024.01.15..."`,
 				"message/header.go:GetEventMessageHeader"))
 		}
+		if tf, ok := h["tag_format"]; ok && tf != "0" && tf != "1" {
+			errs = append(errs, errorf("error", ctx, "NeuralMemory.GetEvent.TagFormat", "tag_format", "header_value",
+				fmt.Sprintf("tag_format must be 0 or 1; got %q.", tf),
+				"Set NeuralMemory.GetEvent.TagFormat to 0 or 1.",
+				`msg.NeuralMemory.GetEvent.TagFormat = message.NullInt{Value: 1, Valid: true}`,
+				"message/types.go:GetEventOptions.TagFormat"))
+		}
+		errs = append(errs, validateWireYN(h, "output_tag_owner", "NeuralMemory.GetEvent.TagOwnerOutput",
+			`msg.NeuralMemory.GetEvent.TagOwnerOutput = message.TagOwnerEventKey`,
+			"message/types.go:GetEventOptions.TagOwnerOutput")...)
+		if hasHeader(h, "output_tag_owner") && h["tag_format"] != "1" {
+			errs = append(errs, errorf("warn", ctx, "NeuralMemory.GetEvent.TagOwnerOutput", "output_tag_owner", "semantic",
+				"output_tag_owner only applies to tag_format=1.",
+				"Set NeuralMemory.GetEvent.TagFormat to 1.",
+				`msg.NeuralMemory.GetEvent.TagFormat = message.NullInt{Value: 1, Valid: true}`,
+				"message/header.go:GetEventMessageHeader"))
+		}
 
 	case "events_for_tag":
+		if bf, ok := h["buffer_format"]; ok && bf != "0" && bf != "1" {
+			errs = append(errs, errorf("error", ctx, "NeuralMemory.GetEventsForTags.BufferFormat", "buffer_format", "header_value",
+				fmt.Sprintf("buffer_format must be 0 or 1; got %q.", bf),
+				"Set NeuralMemory.GetEventsForTags.BufferFormat to \"0\" or \"1\".",
+				`msg.NeuralMemory.GetEventsForTags.BufferFormat = "1"`,
+				"message/types.go:GetEventsForTagsOptions.BufferFormat"))
+		}
+		for _, key := range []string{"get_tag_owner", "get_tag_owner_unique_id"} {
+			errs = append(errs, validateWireYN(h, key, "NeuralMemory.GetEventsForTags.TagOwnerOutput",
+				`msg.NeuralMemory.GetEventsForTags.TagOwnerOutput = message.TagOwnerEventKey`,
+				"message/types.go:GetEventsForTagsOptions.TagOwnerOutput")...)
+		}
+		if (hasHeader(h, "get_tag_owner") || hasHeader(h, "get_tag_owner_unique_id")) && h["buffer_format"] != "1" {
+			errs = append(errs, errorf("warn", ctx, "NeuralMemory.GetEventsForTags.TagOwnerOutput", "get_tag_owner / get_tag_owner_unique_id", "semantic",
+				"get_tag_owner / get_tag_owner_unique_id only apply to buffer_format=1.",
+				"Set NeuralMemory.GetEventsForTags.BufferFormat to \"1\".",
+				`msg.NeuralMemory.GetEventsForTags.BufferFormat = "1"`,
+				"message/header.go:GetEventsForTagMessageHeader"))
+		}
 		if !hasHeader(h, "buffer_results") {
 			errs = append(errs, errorf("warn", ctx, "NeuralMemory.GetEventsForTags.BufferResults", "buffer_results", "header_missing",
 				"GetEventsForTags header is missing buffer_results; this field is expected.",

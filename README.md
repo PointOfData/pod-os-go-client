@@ -69,6 +69,33 @@ msg := &message.Message{
 resp, err := client.SendMessage(context.Background(), msg)
 ```
 
+## Tag Metadata (timestamps and owners)
+
+GetEvent and GetEventsForTags can return each tag's storage time and owning event. Both are opt-in:
+
+```go
+// GetEvent: tag_format=1 adds TagNumber and Timestamp to every tag
+msg.NeuralMemory = &message.NeuralMemoryFields{GetEvent: &message.GetEventOptions{
+    GetTags:   true,
+    TagFormat: message.NullInt{Value: 1, Valid: true},
+}}
+
+// GetEventsForTags: buffer_format=1 adds Timestamp; TagOwnerOutput adds the owner
+msg.NeuralMemory = &message.NeuralMemoryFields{GetEventsForTags: &message.GetEventsForTagsOptions{
+    BufferResults:  true,
+    BufferFormat:   "1",
+    TagOwnerOutput: message.TagOwnerUniqueID, // or message.TagOwnerEventKey
+}}
+
+resp, _ := client.SendMessage(ctx, msg)
+for _, tag := range resp.Response.EventRecords[0].Tags {
+    when, _ := tag.Time()                  // storage time, UTC
+    fmt.Println(tag.Key, tag.Value, when, tag.OwnerUniqueID) // tag.Owner with TagOwnerEventKey
+}
+```
+
+`Client.SendMessage` routes the owner into `Owner` (event key) or `OwnerUniqueID` according to the request. When decoding raw bytes yourself, call `message.ApplyTagOwnerOutput(req, resp)`. See "Tag Metadata" in `knowledge/docs/Pod-OS-Neural-Memory-Retrieval-Prompts.md` for the rules.
+
 ## Knowledge Base
 
 Access embedded Pod-OS documentation:

@@ -378,7 +378,8 @@ Runtime-only constraints ("pre-existing in same database") are delivered as enri
 - `NeuralMemory.GetEvent.TargetFacetFilter` if not nil mapped to "target_facet_filter" OPTIONAL
 - `NeuralMemory.GetEvent.CategoryFilter` if not nil mapped to "category_filter" OPTIONAL
 - `NeuralMemory.GetEvent.TagFilter` if not nil mapped to "tag_filter" OPTIONAL
-- `NeuralMemory.GetEvent.TagFormat` if nil mapped to "tag_format=0" else mapped to "tag_format"; supported values [0, 1] OPTIONAL
+- `NeuralMemory.GetEvent.TagFormat` if not Valid mapped to "tag_format=0" else mapped to "tag_format"; supported values [0, 1] OPTIONAL — value outside [0, 1] → `Rule: "format"` error; TagFormat=1 with GetTags=false → `Rule: "semantic"` warn
+- `NeuralMemory.GetEvent.TagOwnerOutput` (`TagOwnerNone` | `TagOwnerEventKey` | `TagOwnerUniqueID`): `TagOwnerEventKey` mapped to "output_tag_owner=Y", `TagOwnerUniqueID` mapped to "output_tag_owner=N", `TagOwnerNone` omitted OPTIONAL — requires TagFormat=1 (else `Rule: "semantic"` error); unknown value → `Rule: "format"` error
 - `NeuralMemory.GetEvent.RequestFormat` if nil mapped to "request_format=0" else mapped to "request_format"; supported values [0, 1] OPTIONAL
 - `NeuralMemory.GetEvent.FirstLink` if not nil mapped to "first_link" OPTIONAL
 - `NeuralMemory.GetEvent.LinkCount` if not nil mapped to "link_count" OPTIONAL
@@ -408,10 +409,16 @@ case: if Request NeuralMemory.GetEvent.SendData = true and no other GetEventOpti
 
 case if Request NeuralMemory.GetEvent.GetEventOptions.GetTags = true and NeuralMemory.GetEvent.GetEventOptions.RequestFormat = 0:
 
-- Newline separated tags
+- Tags are response HEADER fields (one field per tag), not payload lines
 - If tags exist, do not duplicate in Payload.Data
-- Format: event_tag:nnnnnnnnn:f=key=value where f is frequency; nnnnnnnnn is tag number and not needed for output.
+- tag_format=0 format: `event_tag:nnnnnnnnn:fffffffff=key=value` — nnnnnnnnn = tag number → `TagOutput.TagNumber`; fffffffff = frequency → `TagOutput.Frequency`
+- tag_format=1 format: `event_tag:nnnnnnnnn:fffffffff:ssssssssss.uuuuuu[:owner_id]=key=value`
+-- ssssssssss.uuuuuu = POSIX UTC time the tag was stored → `TagOutput.Timestamp` (parse with `TagOutput.Time()`)
+-- owner_id (split with SplitN so owner IDs containing ':' stay intact) → `TagOutput.Owner`; with output_tag_owner=N it is the owner's unique ID and `Client.SendMessage` / `ApplyTagOwnerOutput` moves it to `TagOutput.OwnerUniqueID`; `NULL` or the all-zero event key `+0000000000.000000...` (no owning event) → empty
+-- Verified live (kind, 2026-09-24): the deployed build omits the `:owner_id` segment even when output_tag_owner=Y/N is sent, so tags decode with an empty owner. The decoder accepts the documented 5-part form when a build emits it.
+- Tags are ordered by tag number
 - `Response.EventRecords.Tags` from event
+- Fixtures: `message/testdata/tag_format/get_event_tag_format_{0,1}.bin`, `get_event_tag_format_1_output_tag_owner_y.bin`
 
 case if GetEventOptions.GetLinks = true:
 
@@ -471,7 +478,8 @@ case if Request NeuralMemory.GetEvent.GetEventOptions.GetTargetTags = true:
 - `NeuralMemory.GetEventsForTags.IncludeTagStats` mapped to `include_tag_stats` OPTIONAL
 - `NeuralMemory.GetEventsForTags.InvertHitTagFilter` mapped to `invert_hit_tag_filter` OPTIONAL
 - `NeuralMemory.GetEventsForTags.HitTagFilter` mapped to `hit_tag_filter` OPTIONAL
-- `NeuralMemory.GetEventsForTags.BufferFormat` mapped to `buffer_format` OPTIONAL
+- `NeuralMemory.GetEventsForTags.BufferFormat` mapped to `buffer_format` (default "0") OPTIONAL — supported values ["0", "1"], else `Rule: "format"` error
+- `NeuralMemory.GetEventsForTags.TagOwnerOutput` (`TagOwnerNone` | `TagOwnerEventKey` | `TagOwnerUniqueID`): `TagOwnerEventKey` mapped to `get_tag_owner=Y`, `TagOwnerUniqueID` mapped to `get_tag_owner_unique_id=Y`, `TagOwnerNone` omitted OPTIONAL — only applies to BufferFormat="1" (else `Rule: "semantic"` warn). NOTE: the bare flag `get_tag_owner_unique_id` without `=Y` is ignored by Pod-OS (verified live); wire values other than Y/N → `Rule: "header_value"` error
 
 **GetEventsForTagsResponse**
 BufferResults case: if Request NeuralMemory.GetEventsForTags.BufferResults = 'Y': 
@@ -533,7 +541,7 @@ BufferResults case: if Request NeuralMemory.GetEventsForTags.BufferResults = 'Y'
 --- `Event` non-nil REQUIRED
 --- `Event.Id` mapped from `_event_id` REQUIRED
 --- `Event.UniqueId` mapped from `tag:{n}:unique_id` OPTIONAL
---- `Event.Tags` mapped from tab-separated tags; format: tag:freq:key=value
+--- `Event.Tags` mapped from tab-separated tags in wire order; format: tag:freq:key=value (tags sharing a key and frequency are all kept)
 --- `EventFields.Hits` mapped from `_hits` REQUIRED — total search term match hits for this individual event object (type: int, field added to EventFields in types.go)
 
 -- case line has prefix `_link`:
@@ -566,7 +574,23 @@ BufferResults case: if Request NeuralMemory.GetEventsForTags.BufferResults = 'Y'
 --- `timestamp` mapped to `Tag.timestamp` OPTIONAL
 ```
 
-- BufferFormat case: if Request NeuralMemory.GetEventsForTags.BufferFormat = 1 → return `ValidationError{Severity:"warn", Rule:"uncovered", Message:"BufferFormat=1 response parsing is currently uncovered; support is in development"}` and skip further payload validation for this message
+```
+{Payload}
+- BufferFormat case: if Request NeuralMemory.GetEventsForTags.BufferFormat = 1
+-- `_event_id`, `_link`, `_linktag`, `_targettag` lines as in BufferFormat 0, except `_event_id` lines carry no inline `tag:` fields
+-- Case line has prefix `_event_tag` (one line per tag, following its `_event_id` line):
+--- format: `_event_tag=<event key>\ttag_freq=nnnnnnnnn\ttag_value=key=value\ttag_timestamp=ssssssssss.uuuuuu[\towner=<event key or unique ID>]`
+--- `_event_tag` = key of the event the tag belongs to; the tag is appended to that event's `Event.Tags` REQUIRED
+--- `tag_freq` mapped to `Tag.Frequency` REQUIRED
+--- `tag_value` mapped to {`Tag.Key`}={`Tag.Value`} REQUIRED
+--- `tag_timestamp` mapped to `Tag.Timestamp` (POSIX UTC time the tag was stored) REQUIRED
+--- `owner` mapped to `Tag.Owner` (get_tag_owner=Y: event key) or, after `ApplyTagOwnerOutput`, `Tag.OwnerUniqueID` (get_tag_owner_unique_id=Y: unique ID) OPTIONAL; `NULL` or the all-zero event key `+0000000000.000000...` → empty
+--- `Event.UniqueId` from the `_unique_id` tag when not already set
+-- WIRE QUIRK (verified live, kind 2026-09-24): with an owner flag, Pod-OS writes `\towner=X` AFTER the tag line's newline, so it runs into the next record with no separator:
+   `_event_tag=K\t...\ttag_timestamp=T1\n\towner=O1_event_tag=K\t...\ttag_timestamp=T2\n\towner=O2\n`
+   Each owner belongs to the tag line BEFORE it (the last owner follows the last tag). Decoders must rejoin `\n\towner=` to the previous line and split `O_event_tag=` into `O` + a new `_event_tag=` record (`normalizeTagOwnerLines`). Payloads in the documented form are left unchanged.
+-- Fixtures: `message/testdata/tag_format/events_for_tag_buffer_format_{0,1}.bin`, `events_for_tag_buffer_format_1_get_tag_owner.bin`, `events_for_tag_buffer_format_1_get_tag_owner_unique_id.bin`
+```
 - BufferResults case: if Request NeuralMemory.GetEventsForTags.BufferResults = 'N' → return `ValidationError{Severity:"warn", Rule:"uncovered", Message:"Non-buffered (BufferResults=N) response parsing is currently uncovered; support is in development"}` and skip further payload validation for this message
 
 **LinkEvent**
@@ -881,8 +905,8 @@ Per-command header checks (keyed by `_db_cmd` value):
 - `**store`**: `timestamp` present (the encoder always writes it)
 - `**store_batch`**: `_db_cmd=store_batch` present; payload length > 0 (batch events are payload-only)
 - `**tag_store_batch**`: `unique_id` OR `event_id` present; `owner` OR `owner_unique_id` present
-- `**get**`: `event_id` OR `unique_id` present
-- `**events_for_tag**`: `_db_cmd=events_for_tag` present; `buffer_results` present (always written by encoder)
+- `**get**`: `event_id` OR `unique_id` present; `tag_format` if present is `0` or `1`; `output_tag_owner` if present is `Y` or `N` (`header_value` error otherwise) and warns when `tag_format` != `1`
+- `**events_for_tag**`: `_db_cmd=events_for_tag` present; `buffer_results` present (always written by encoder); `buffer_format` if present is `0` or `1`; `get_tag_owner` / `get_tag_owner_unique_id` if present are `Y` or `N` and warn when `buffer_format` != `1`
 - `**link**`: `strength_a`, `strength_b`, `category` present; (`unique_id_a`+`unique_id_b`) OR (`event_id_a`+`event_id_b`) present; `owner_event_id` OR `owner_unique_id` present; `timestamp` present
 - `**unlink**`: `event_id` OR `unique_id` present (from `NeuralMemory.Link` after pending code change)
 - `**link_batch**`: `_db_cmd=link_batch` present; payload length > 0

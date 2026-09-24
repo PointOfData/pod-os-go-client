@@ -439,8 +439,17 @@ func GetEventMessageHeader(msg *Message) string {
 			header.WriteString("tag_filter=" + opts.TagFilter + "\t")
 		}
 
-		// Set tag format to 0 as default
-		header.WriteString("tag_format=0\t") // TODO: a more detailed method is available in tag_format=1 (see documentation)
+		tagFormat := 0
+		if opts.TagFormat.Valid {
+			tagFormat = opts.TagFormat.Value
+		}
+		header.WriteString("tag_format=" + strconv.Itoa(tagFormat) + "\t")
+		switch opts.TagOwnerOutput {
+		case TagOwnerEventKey:
+			header.WriteString("output_tag_owner=Y\t")
+		case TagOwnerUniqueID:
+			header.WriteString("output_tag_owner=N\t")
+		}
 
 		// Set format to 0 as default
 		header.WriteString("request_format=0\t")
@@ -558,6 +567,12 @@ func GetEventsForTagMessageHeader(msg *Message) string {
 			header.WriteString("owner=" + forceASCII(opts.Owner) + "\t") //V
 		} else if opts.OwnerUniqueID != "" {
 			header.WriteString("owner_unique_id=" + opts.OwnerUniqueID + "\t")
+		}
+		switch opts.TagOwnerOutput {
+		case TagOwnerEventKey:
+			header.WriteString("get_tag_owner=Y\t")
+		case TagOwnerUniqueID:
+			header.WriteString("get_tag_owner_unique_id=Y\t")
 		}
 		if hitTagFilter != "" {
 			header.WriteString("hit_tag_filter=" + forceASCII(hitTagFilter) + "\t")

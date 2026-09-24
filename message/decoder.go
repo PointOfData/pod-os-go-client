@@ -74,47 +74,18 @@ func payloadContainsLinkRecords(data interface{}) bool {
 	return false
 }
 
-// parseEventTagHeaders parses event_tag headers from GetEvent response
-// Format: event_tag:<freq>:<timestamp>=tag_value
-// Returns a slice of TagOutput parsed from the headers
+// parseEventTagHeaders parses event_tag headers from a GetEvent response, ordered by tag number.
+// Formats: event_tag:nnnnnnnnn:fffffffff (tag_format=0) and
+// event_tag:nnnnnnnnn:fffffffff:ssssssssss.uuuuuu[:owner_id] (tag_format=1); the value is key=value.
 func parseEventTagHeaders(msg *Message, headerMap *map[string]string) []TagOutput {
 	var results []TagOutput
 
 	for key, value := range *headerMap {
-		if !strings.HasPrefix(key, "event_tag:") {
-			continue
+		if tag, ok := parseEventTagHeader(key, value); ok {
+			results = append(results, tag)
 		}
-
-		// Parse key format: event_tag:<freq>:<timestamp>
-		parts := strings.Split(key, ":")
-		if len(parts) < 2 {
-			continue
-		}
-
-		tag := TagOutput{
-			Value: value,
-		}
-
-		// Parse frequency (second part after event_tag:)
-		if len(parts) >= 2 {
-			if freq, err := strconv.Atoi(parts[2]); err == nil {
-				tag.Frequency = freq
-			} else {
-				tag.Frequency = 1 // Default to 1 if parsing fails
-			}
-		}
-
-		// Timestamp is in parts[2] if present, but we don't need to store it
-		// as TagOutput doesn't have a timestamp field
-
-		// Parse the value to extract key=value if present
-		if eqIdx := strings.Index(value, "="); eqIdx > 0 {
-			tag.Key = value[:eqIdx]
-			tag.Value = value[eqIdx+1:]
-		}
-
-		results = append(results, tag)
 	}
+	sortTagsByNumber(results)
 
 	return results
 }

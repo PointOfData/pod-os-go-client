@@ -4,6 +4,7 @@ import (
 	"crypto"
 	"encoding/json"
 	"fmt"
+	"time"
 )
 
 // NullInt wraps an int to distinguish between a zero value and "not set".
@@ -152,7 +153,7 @@ type NeuralMemoryFields struct {
 type GetEventOptions struct {
 	SendData          bool    `podos:"send_data"`           // Return payload data with MIME type in the Response payload section
 	LocalIdOnly       bool    `podos:"local_id_only"`       // Return only local ID
-	TagFormat         NullInt `podos:"tag_format"`          // Tag output format (0 or 1)
+	TagFormat         NullInt `podos:"tag_format"`          // Tag output format: 0 (default) = event_tag:n:f, 1 = event_tag:n:f:ssssssssss.uuuuuu[:owner] (adds storage timestamp and owner)
 	RequestFormat     int     `podos:"request_format"`      // Output format (use 0 as default)
 	FirstLink         int     `podos:"first_link"`          // First link index to retrieve
 	LinkCount         int     `podos:"link_count"`          // Number of links to return
@@ -165,7 +166,18 @@ type GetEventOptions struct {
 	TargetFacetFilter string  `podos:"target_facet_filter"` // Filter target tags by prefix
 	CategoryFilter    string  `podos:"category_filter"`     // Filter by link category
 	TagFilter         string  `podos:"tag_filter"`          // Regex filter for tags
+	TagOwnerOutput    TagOwnerOutput                        // Report each tag's owner (requires TagFormat=1): TagOwnerEventKey sends output_tag_owner=Y, TagOwnerUniqueID sends output_tag_owner=N
 }
+
+// TagOwnerOutput selects whether, and how, the owner of each returned tag is reported
+// in GetEvent (tag_format=1) and GetEventsForTags (buffer_format=1) responses.
+type TagOwnerOutput string
+
+const (
+	TagOwnerNone     TagOwnerOutput = ""          // Do not report tag owners (default)
+	TagOwnerEventKey TagOwnerOutput = "event_key" // Report the full event key of the event that created each tag (TagOutput.Owner)
+	TagOwnerUniqueID TagOwnerOutput = "unique_id" // Report the unique ID of the event that created each tag (TagOutput.OwnerUniqueID)
+)
 
 // GetEventsForTagsOptions contains options for the GetEventsForTags intent.
 // Searches for events matching tag patterns.
@@ -197,7 +209,8 @@ type GetEventsForTagsOptions struct {
 	IncludeTagStats    bool   `podos:"include_tag_stats"`     // Y: Includes statistics for each tag value that resulted in a match hit.
 	InvertHitTagFilter bool   `podos:"invert_hit_tag_filter"` // Invert the hit tag filter
 	HitTagFilter       string `podos:"hit_tag_filter"`        // Filter for result tags
-	BufferFormat       string `podos:"buffer_format"`         // Output format: 0 = format a, 1 = format b
+	BufferFormat       string `podos:"buffer_format"`         // Output format: "0" = tags inline on the _event_id line (tag:freq:key=value), "1" = one _event_tag line per tag with tag_freq, tag_value, tag_timestamp and optional owner
+	TagOwnerOutput     TagOwnerOutput                         // Report each tag's owner (requires BufferFormat="1"): TagOwnerEventKey sends get_tag_owner=Y, TagOwnerUniqueID sends get_tag_owner_unique_id=Y
 }
 
 // SearchOptions contains programmable search configuration.
@@ -607,13 +620,20 @@ type TagOutputList TagOutput
 
 // TagOutput represents a parsed tag from response payload.
 type TagOutput struct {
-	Frequency   int
-	Category    string
-	Key         string
-	Value       string
-	Owner       string
-	Timestamp   string
-	TargetTagId string // ID of the target tag; used to identify the target tag in the response.
+	Frequency     int
+	Category      string
+	Key           string
+	Value         string
+	Owner         string // Event key of the event that created the tag (TagOwnerEventKey); empty when unowned
+	OwnerUniqueID string // Unique ID of the event that created the tag (TagOwnerUniqueID); empty when unowned or the owner has no unique ID
+	Timestamp     string // Tag storage time as POSIX "ssssssssss.uuuuuu" UTC (GetEvent tag_format=1, GetEventsForTags buffer_format=1)
+	TagNumber     int    // Database tag counter (GetEvent event_tag:nnnnnnnnn); 0 when not reported
+	TargetTagId   string // ID of the target tag; used to identify the target tag in the response.
+}
+
+// Time parses Timestamp into a UTC time.Time. Returns false when Timestamp is empty or malformed.
+func (t TagOutput) Time() (time.Time, bool) {
+	return parsePosixTimestamp(t.Timestamp)
 }
 
 // =============================================================================

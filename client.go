@@ -551,10 +551,17 @@ func (c *Client) SendMessage(ctx context.Context, msg *message.Message) (*messag
 	}
 
 	// Use concurrent pattern if receiver is active, otherwise use synchronous pattern
+	var resp *message.Message
+	var err error
 	if c.receiverActive {
-		return c.sendMessageWithCorrelation(ctx, msg)
+		resp, err = c.sendMessageWithCorrelation(ctx, msg)
+	} else {
+		resp, err = c.sendMessageSync(ctx, msg)
 	}
-	return c.sendMessageSync(ctx, msg)
+	if err == nil {
+		message.ApplyTagOwnerOutput(msg, resp)
+	}
+	return resp, err
 }
 
 // SendMessageWithRaw sends a message and returns both the decoded response and the raw wire bytes.
@@ -566,10 +573,18 @@ func (c *Client) SendMessageWithRaw(ctx context.Context, msg *message.Message) (
 	if msg.MessageId == "" {
 		msg.MessageId = uuid.New().String()
 	}
+	var resp *message.Message
+	var raw []byte
+	var err error
 	if c.receiverActive {
-		return c.sendMessageWithCorrelationRaw(ctx, msg)
+		resp, raw, err = c.sendMessageWithCorrelationRaw(ctx, msg)
+	} else {
+		resp, raw, err = c.sendMessageSyncRaw(ctx, msg)
 	}
-	return c.sendMessageSyncRaw(ctx, msg)
+	if err == nil {
+		message.ApplyTagOwnerOutput(msg, resp)
+	}
+	return resp, raw, err
 }
 
 // SendControlMessage sends a control message (no response expected)
