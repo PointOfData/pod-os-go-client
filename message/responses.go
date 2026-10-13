@@ -110,7 +110,7 @@ func parseGetEventsForTagsPayload(msg *Message) (eventResults []EventFields, ok 
 	eventsMap := make(map[string]*EventFields, estimatedEvents)
 	eventOrder := make([]string, 0, estimatedEvents) // preserve insertion order
 
-	linksMap := make(map[string]*LinkFields, estimatedEvents*2)
+	linksMap := make(map[string]*Linked, estimatedEvents*2)
 	linksBySource := make(map[string][]string, estimatedEvents) // source_event_id -> []link_ids
 
 	linkTagsMap := make(map[string][]TagOutput, estimatedEvents*2)
@@ -143,9 +143,8 @@ func parseGetEventsForTagsPayload(msg *Message) (eventResults []EventFields, ok 
 			linkId, link := parseLinkLine(line)
 			if linkId != "" && link != nil {
 				linksMap[linkId] = link
-				// Index by source for O(1) lookup during assembly
-				if link.EventA != "" {
-					linksBySource[link.EventA] = append(linksBySource[link.EventA], linkId)
+				if link.SourceId != "" {
+					linksBySource[link.SourceId] = append(linksBySource[link.SourceId], linkId)
 				}
 			}
 
@@ -181,7 +180,7 @@ func parseGetEventsForTagsPayload(msg *Message) (eventResults []EventFields, ok 
 
 		// Get all links for this event via index
 		linkIds := linksBySource[eventId]
-		links := make([]LinkFields, 0, len(linkIds))
+		links := make([]Linked, 0, len(linkIds))
 
 		for _, linkId := range linkIds {
 			link := linksMap[linkId]
@@ -195,15 +194,17 @@ func parseGetEventsForTagsPayload(msg *Message) (eventResults []EventFields, ok 
 			}
 
 			// Attach target tags using the link's target event ID (O(1) lookup)
-			if link.EventB != "" {
-				if targetTags, exists := targetTagsMap[link.EventB]; exists {
+			if link.TargetId != "" {
+				if targetTags, exists := targetTagsMap[link.TargetId]; exists {
 					link.TargetTags = targetTags
 				}
 			}
 
-			// Populate UniqueIdA from parent event's unique_id (links are stored on the source event)
-			if link.UniqueIdA == "" && event.UniqueId != "" {
-				link.UniqueIdA = event.UniqueId
+			if link.SourceUniqueId == "" && event.UniqueId != "" {
+				link.SourceUniqueId = event.UniqueId
+			}
+			if link.SourceId == "" {
+				link.SourceId = event.Id
 			}
 
 			links = append(links, *link)
@@ -302,7 +303,7 @@ func parseBriefHitLine(line string, msg *Message) {
 }
 
 // parseLinkLine parses a _link line
-func parseLinkLine(line string) (string, *LinkFields) {
+func parseLinkLine(line string) (string, *Linked) {
 	recordMap := parseTabDelimitedLine(line)
 
 	linkId, exists := recordMap["_link"]
@@ -310,26 +311,26 @@ func parseLinkLine(line string) (string, *LinkFields) {
 		return "", nil
 	}
 
-	link := &LinkFields{Id: linkId}
+	link := &Linked{Id: linkId}
 
 	if source, exists := recordMap["source"]; exists {
-		link.EventA = source
+		link.SourceId = source
 	}
 	if target, exists := recordMap["target"]; exists {
-		link.EventB = target
+		link.TargetId = target
 	}
 	if uniqueId, exists := recordMap["unique_id"]; exists {
 		link.UniqueId = uniqueId
 	}
 	if sourceUniqueId, exists := recordMap["source_unique_id"]; exists {
-		link.UniqueIdA = sourceUniqueId
+		link.SourceUniqueId = sourceUniqueId
 	}
 	if targetUniqueId, exists := recordMap["target_unique_id"]; exists {
-		link.UniqueIdB = targetUniqueId
+		link.TargetUniqueId = targetUniqueId
 	}
 	if strength, exists := recordMap["strength"]; exists {
 		if s, err := strconv.ParseFloat(strength, 64); err == nil {
-			link.StrengthB = s
+			link.Strength = s
 		}
 	}
 	if category, exists := recordMap["category"]; exists {
@@ -512,11 +513,11 @@ func parseStoreBatchEventsPayload(msg *Message) (result *StoreBatchEventRecord, 
 // - LinkTags: _linktag with associated fields
 // - TargetTags: _target_event_tag with associated fields
 // If SendData=true was in the request, the payload is BLOB data and this function should not be called.
-func parseGetEventResponse(msg *Message, headerMap *map[string]string) (tags []TagOutput, links []LinkFields, ok bool) {
+func parseGetEventResponse(msg *Message, headerMap *map[string]string) (tags []TagOutput, links []Linked, ok bool) {
 
 	// Compiles a complete Event object with Tags and Links. The GetEvent Response Header contains the Tags for the Events. The Payload contains the Links data.
 	tags = []TagOutput{}
-	links = []LinkFields{}
+	links = []Linked{}
 
 	if msg.Response == nil {
 		return nil, nil, false
@@ -542,7 +543,7 @@ func parseGetEventResponse(msg *Message, headerMap *map[string]string) (tags []T
 	}
 
 	// Line-based parsing: GetEvent payload uses newline-separated records
-	linkMap := make(map[string]*LinkFields)
+	linkMap := make(map[string]*Linked)
 	linkTagsMap := make(map[string][]TagOutput)
 	targetTagsMap := make(map[string][]TagOutput)
 
@@ -556,7 +557,7 @@ func parseGetEventResponse(msg *Message, headerMap *map[string]string) (tags []T
 
 		// Parse _link= lines (link records with inline fields)
 		if strings.HasPrefix(line, "_link=") {
-			link := parseGetEventLinkLine(line, headerMap)
+			link := parseGetEventLinkLine(line, headerMap, msg.Event)
 			if link != nil {
 				linkMap[link.Id] = link
 			}
@@ -584,7 +585,7 @@ func parseGetEventResponse(msg *Message, headerMap *map[string]string) (tags []T
 		// Mixed first line: may contain event_tags and _link= on same line
 		recordMap := parseTabDelimitedLine(line)
 		if linkId, hasLink := recordMap["_link"]; hasLink && linkId != "" {
-			link := parseGetEventLinkLine(line, headerMap)
+			link := parseGetEventLinkLine(line, headerMap, msg.Event)
 			if link != nil {
 				linkMap[link.Id] = link
 			}
@@ -596,14 +597,18 @@ func parseGetEventResponse(msg *Message, headerMap *map[string]string) (tags []T
 		if linkTags, exists := linkTagsMap[link.Id]; exists {
 			link.Tags = linkTags
 		}
-		if link.EventB != "" {
-			if targetTags, exists := targetTagsMap[link.EventB]; exists {
+		if link.TargetId != "" {
+			if targetTags, exists := targetTagsMap[link.TargetId]; exists {
 				link.TargetTags = targetTags
 			}
 		}
-		// Populate UniqueIdA from parent event's unique_id (links are stored on the source event)
-		if link.UniqueIdA == "" && msg.Event != nil && msg.Event.UniqueId != "" {
-			link.UniqueIdA = msg.Event.UniqueId
+		if msg.Event != nil {
+			if link.SourceUniqueId == "" && msg.Event.UniqueId != "" {
+				link.SourceUniqueId = msg.Event.UniqueId
+			}
+			if link.SourceId == "" && msg.Event.Id != "" {
+				link.SourceId = msg.Event.Id
+			}
 		}
 		links = append(links, *link)
 	}
@@ -613,39 +618,51 @@ func parseGetEventResponse(msg *Message, headerMap *map[string]string) (tags []T
 
 // parseGetEventLinkLine parses a _link= line from GetEvent payload.
 // Format: _link={linkId}	unique_id=	target_event=	target_unique_id=	strength=	link_time=	category=
-func parseGetEventLinkLine(line string, headerMap *map[string]string) *LinkFields {
+func parseGetEventLinkLine(line string, headerMap *map[string]string, request *EventFields) *Linked {
 	recordMap := parseTabDelimitedLine(line)
 	linkId, exists := recordMap["_link"]
 	if !exists || linkId == "" {
 		return nil
 	}
 
-	link := &LinkFields{Id: linkId}
+	link := &Linked{Id: linkId}
 
 	if targetEvent, exists := recordMap["target_event"]; exists {
-		link.EventB = targetEvent
+		link.TargetId = targetEvent
 	}
 	if targetUniqueId, exists := recordMap["target_unique_id"]; exists {
-		link.UniqueIdB = targetUniqueId
+		link.TargetUniqueId = targetUniqueId
 	}
 	if uniqueId, exists := recordMap["unique_id"]; exists {
 		link.UniqueId = uniqueId
 	}
 	if strength, exists := recordMap["strength"]; exists {
 		if s, err := strconv.ParseFloat(strength, 64); err == nil {
-			link.StrengthB = s
+			link.Strength = s
 		}
 	}
 	if category, exists := recordMap["category"]; exists {
 		link.Category = category
 	}
 
-	// EventA is the main event (source); get from header when available
+	if request != nil {
+		link.SourceId = request.Id
+		link.SourceUniqueId = request.UniqueId
+	}
 	if headerMap != nil {
-		if eventId, exists := (*headerMap)["event_id"]; exists {
-			link.EventA = eventId
-		} else if eventId, exists := (*headerMap)["_event_id"]; exists {
-			link.EventA = eventId
+		if link.SourceId == "" {
+			if eventId, exists := (*headerMap)["event_id"]; exists {
+				link.SourceId = eventId
+			} else if eventId, exists := (*headerMap)["_event_id"]; exists {
+				link.SourceId = eventId
+			}
+		}
+		if link.SourceUniqueId == "" {
+			if uid, exists := (*headerMap)["_unique_id"]; exists {
+				link.SourceUniqueId = uid
+			} else if uid, exists := (*headerMap)["unique_id"]; exists {
+				link.SourceUniqueId = uid
+			}
 		}
 	}
 

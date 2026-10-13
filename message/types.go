@@ -105,7 +105,7 @@ type EventFields struct {
 	LocationSeparator string         `podos:"loc_delim"` // Location segment delimiter (default "|")
 	Type              string         `podos:"type"`      // Developer-defined event type string
 	Tags              []TagOutput    `podos:"tags"`      // Tags for the event; for use when processing a Response message.
-	Links             []LinkFields   `podos:"links"`     // Links for the event; for use when processing a Response message.
+	Links             []Linked       `podos:"links"`     // Viewer-perspective adjacency from GetEvent / GetEventsForTags.
 	PayloadData       PayloadFields  // Payload data; for use when processing a Response message so that Payload data is logically associated with the Event represented by EventFields.
 	Status            string         `podos:"_status"` // Status of the event; used in StoreBatchEvents response
 	Hits              int            `podos:"_hits"`   // Total search term match hits across this event object (from GetEventsForTags response)
@@ -249,6 +249,21 @@ type LinkFields struct {
 	TargetTags        []TagOutput    `podos:"target_tags"`     // Tags describing the target event; populated from _targettag records; this is a convenience field for the developer to access the target tags without an additional call.
 	Status            string         `podos:"_status"`         // Status of the link; used in StoreBatchLinks response
 	Message           string         `podos:"_msg"`            // Message of the link; used in StoreBatchLinks response
+}
+
+// Linked is one directed adjacency from the searched or returned event to a neighbor.
+// Strength is always source → target. Write-side A/B weights stay on LinkFields.
+type Linked struct {
+	Id              string      `podos:"id"`                // Link event id (_link)
+	UniqueId        string      `podos:"unique_id"`         // Link unique id
+	SourceId        string      `podos:"source_id"`         // Returned/search object event id
+	SourceUniqueId  string      `podos:"source_unique_id"`  // Returned/search object unique id
+	TargetId        string      `podos:"target_id"`         // Neighbor event id
+	TargetUniqueId  string      `podos:"target_unique_id"`  // Neighbor unique id
+	Strength        float64     `podos:"strength"`          // Source → target only
+	Category        string      `podos:"category"`
+	Tags            []TagOutput `podos:"tags"`
+	TargetTags      []TagOutput `podos:"target_tags"`
 }
 
 // =============================================================================

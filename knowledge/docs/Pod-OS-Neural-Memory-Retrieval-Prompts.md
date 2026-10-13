@@ -217,6 +217,7 @@ Use to retrieve a single Event Object [GetEvent Intent type].
 ##### Rules:
 - Use get when Event.Id, Event.UniqueId, or Time and Location are known.
 - If GetEvent.GetLinks=true and GetEvent.SendData=true, Pod-OS returns links rather than the data blob.
+- GetEvent and GetEventsForTags decode adjacency as **`Linked`**: one directed view from the searched/returned object. `Linked.Strength` is always source → target. Write-side `LinkFields.StrengthA` / `StrengthB` are not used on reads. GetEvent does not put source on the `_link=` line — it is the request/returned event. Inbound and outbound both appear as returned-object → neighbor.
 
 #### Example 1: Basic GetEvent Request (by EventId)
 

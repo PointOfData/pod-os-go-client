@@ -1150,11 +1150,14 @@ func TestDecodeMessage_GetEventsForTagsResponse_LinksPopulateUniqueIdA(t *testin
 	}
 
 	link := event.Links[0]
-	if link.UniqueIdA != "src_uid" {
-		t.Errorf("Link.UniqueIdA = %q, want %q", link.UniqueIdA, "src_uid")
+	if link.SourceUniqueId != "src_uid" {
+		t.Errorf("Linked.SourceUniqueId = %q, want %q", link.SourceUniqueId, "src_uid")
 	}
-	if link.UniqueIdB != "tgt_uid" {
-		t.Errorf("Link.UniqueIdB = %q, want %q", link.UniqueIdB, "tgt_uid")
+	if link.TargetUniqueId != "tgt_uid" {
+		t.Errorf("Linked.TargetUniqueId = %q, want %q", link.TargetUniqueId, "tgt_uid")
+	}
+	if link.Strength != 0.9 {
+		t.Errorf("Linked.Strength = %v, want 0.9", link.Strength)
 	}
 }
 
@@ -1185,10 +1188,49 @@ func TestDecodeMessage_GetEventResponse_LinksPopulateUniqueIdA(t *testing.T) {
 	}
 
 	link := decoded.Event.Links[0]
-	if link.UniqueIdA != "src_uid" {
-		t.Errorf("Link.UniqueIdA = %q, want %q", link.UniqueIdA, "src_uid")
+	if link.SourceUniqueId != "src_uid" {
+		t.Errorf("Linked.SourceUniqueId = %q, want %q", link.SourceUniqueId, "src_uid")
 	}
-	if link.UniqueIdB != "tgt_uid" {
-		t.Errorf("Link.UniqueIdB = %q, want %q", link.UniqueIdB, "tgt_uid")
+	if link.TargetUniqueId != "tgt_uid" {
+		t.Errorf("Linked.TargetUniqueId = %q, want %q", link.TargetUniqueId, "tgt_uid")
+	}
+	if link.Strength != 0.9 {
+		t.Errorf("Linked.Strength = %v, want 0.9", link.Strength)
+	}
+}
+
+func TestDecodeLinked_GetEventViewerPerspective(t *testing.T) {
+	header := "_type=get\t_status=OK\t_event_id=evt_a\t_unique_id=eo_seed_a"
+	payload := strings.Join([]string{
+		"_link=+1\tunique_id=lk_a_to_x\ttarget_event=evt_x\ttarget_unique_id=eo_nbr_x\tstrength=0.750000\tcategory=supplies_to",
+		"_link=+2\tunique_id=lk_b_to_a\ttarget_event=evt_b\ttarget_unique_id=eo_nbr_b\tstrength=0.250000\tcategory=supplies_to",
+	}, "\n")
+
+	msg := buildMinimalMessage(
+		"mem@gateway.example.com",
+		"client@gateway.example.com",
+		header,
+		1001,
+		0,
+		payload,
+	)
+	decoded, err := DecodeMessage(msg)
+	if err != nil {
+		t.Fatalf("DecodeMessage() error = %v", err)
+	}
+	if decoded.Event == nil || len(decoded.Event.Links) != 2 {
+		t.Fatalf("Links count = %d, want 2", len(decoded.Event.Links))
+	}
+	byUID := map[string]Linked{}
+	for _, lk := range decoded.Event.Links {
+		byUID[lk.UniqueId] = lk
+	}
+	out := byUID["lk_a_to_x"]
+	if out.SourceUniqueId != "eo_seed_a" || out.TargetUniqueId != "eo_nbr_x" || out.Strength != 0.75 {
+		t.Errorf("outbound Linked = %+v", out)
+	}
+	inb := byUID["lk_b_to_a"]
+	if inb.SourceUniqueId != "eo_seed_a" || inb.TargetUniqueId != "eo_nbr_b" || inb.Strength != 0.25 {
+		t.Errorf("inbound-as-view Linked = %+v (must not be B→A)", inb)
 	}
 }
