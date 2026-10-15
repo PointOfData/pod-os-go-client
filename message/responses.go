@@ -542,9 +542,13 @@ func parseGetEventResponse(msg *Message, headerMap *map[string]string) (tags []T
 		return tags, links, true
 	}
 
-	// Line-based parsing: GetEvent payload uses newline-separated records
+	// Line-based parsing: GetEvent payload uses newline-separated records.
+	// Key links by unique_id when present: a stored bidirectional link can emit
+	// two viewer _link rows that share the same _link event id but differ by
+	// unique_id / target / strength (verified live on ENM GetEvent).
 	linkMap := make(map[string]*Linked)
-	linkTagsMap := make(map[string][]TagOutput)
+	linkTagsByUnique := make(map[string][]TagOutput)
+	linkTagsById := make(map[string][]TagOutput)
 	targetTagsMap := make(map[string][]TagOutput)
 
 	lines := strings.Split(payloadStr, "\n")
@@ -559,16 +563,21 @@ func parseGetEventResponse(msg *Message, headerMap *map[string]string) (tags []T
 		if strings.HasPrefix(line, "_link=") {
 			link := parseGetEventLinkLine(line, headerMap, msg.Event)
 			if link != nil {
-				linkMap[link.Id] = link
+				linkMap[getEventLinkMapKey(link)] = link
 			}
 			continue
 		}
 
-		// Parse _linktag lines (link ID from event_id, not _linktag)
+		// Parse _linktag lines (event_id = link event id; unique = link unique id)
 		if strings.HasPrefix(line, "_linktag\t") || line == "_linktag" {
-			linkId, tag := parseGetEventLinkTagLine(line)
-			if linkId != "" && tag != nil {
-				linkTagsMap[linkId] = append(linkTagsMap[linkId], *tag)
+			linkId, uniqueId, tag := parseGetEventLinkTagLine(line)
+			if tag == nil {
+				continue
+			}
+			if uniqueId != "" {
+				linkTagsByUnique[uniqueId] = append(linkTagsByUnique[uniqueId], *tag)
+			} else if linkId != "" {
+				linkTagsById[linkId] = append(linkTagsById[linkId], *tag)
 			}
 			continue
 		}
@@ -587,14 +596,18 @@ func parseGetEventResponse(msg *Message, headerMap *map[string]string) (tags []T
 		if linkId, hasLink := recordMap["_link"]; hasLink && linkId != "" {
 			link := parseGetEventLinkLine(line, headerMap, msg.Event)
 			if link != nil {
-				linkMap[link.Id] = link
+				linkMap[getEventLinkMapKey(link)] = link
 			}
 		}
 	}
 
-	// Consolidate links with their tags (target tags keyed by link.EventB)
+	// Consolidate links with their tags (target tags keyed by neighbor event id)
 	for _, link := range linkMap {
-		if linkTags, exists := linkTagsMap[link.Id]; exists {
+		if link.UniqueId != "" {
+			if linkTags, exists := linkTagsByUnique[link.UniqueId]; exists {
+				link.Tags = linkTags
+			}
+		} else if linkTags, exists := linkTagsById[link.Id]; exists {
 			link.Tags = linkTags
 		}
 		if link.TargetId != "" {
@@ -614,6 +627,15 @@ func parseGetEventResponse(msg *Message, headerMap *map[string]string) (tags []T
 	}
 
 	return tags, links, true
+}
+
+// getEventLinkMapKey distinguishes viewer-perspective Linked rows. Prefer unique_id:
+// ENM may reuse one _link event id for both directions of a stored relationship.
+func getEventLinkMapKey(link *Linked) string {
+	if link.UniqueId != "" {
+		return "u:" + link.UniqueId
+	}
+	return "i:" + link.Id
 }
 
 // parseGetEventLinkLine parses a _link= line from GetEvent payload.
@@ -671,12 +693,14 @@ func parseGetEventLinkLine(line string, headerMap *map[string]string, request *E
 
 // parseGetEventLinkTagLine parses a _linktag line from GetEvent payload.
 // Format: _linktag	event_id={linkId}	unique=	freq=	timestamp=	value=
-// The link ID comes from event_id, not _linktag.
-func parseGetEventLinkTagLine(line string) (linkId string, tag *TagOutput) {
+// event_id is the link event id; unique (when present) is the link unique id used to
+// attach tags when multiple Linked rows share one event id.
+func parseGetEventLinkTagLine(line string) (linkId string, uniqueId string, tag *TagOutput) {
 	recordMap := parseTabDelimitedLine(line)
 	linkId = recordMap["event_id"]
-	if linkId == "" {
-		return "", nil
+	uniqueId = recordMap["unique"]
+	if linkId == "" && uniqueId == "" {
+		return "", "", nil
 	}
 
 	tag = &TagOutput{}
@@ -692,7 +716,7 @@ func parseGetEventLinkTagLine(line string) (linkId string, tag *TagOutput) {
 		}
 	}
 
-	return linkId, tag
+	return linkId, uniqueId, tag
 }
 
 // parseGetEventTargetTagLine parses a _target_event_tag line from GetEvent payload.

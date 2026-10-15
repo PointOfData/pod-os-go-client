@@ -152,7 +152,6 @@ func TestStoreBatchTagsMessageHeader(t *testing.T) {
 	}
 }
 
-
 func TestGetEventMessageHeader(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -1232,5 +1231,52 @@ func TestDecodeLinked_GetEventViewerPerspective(t *testing.T) {
 	inb := byUID["lk_b_to_a"]
 	if inb.SourceUniqueId != "eo_seed_a" || inb.TargetUniqueId != "eo_nbr_b" || inb.Strength != 0.25 {
 		t.Errorf("inbound-as-view Linked = %+v (must not be B→A)", inb)
+	}
+}
+
+// Live ENM GetEvent often reuses one _link event id for both viewer rows of a
+// bidirectional store; uniqueness is on unique_id / target / strength.
+func TestDecodeLinked_GetEventSharedLinkEventId(t *testing.T) {
+	header := "_type=get\t_status=OK\t_event_id=evt_a\t_unique_id=eo_seed_a"
+	shared := "+1792088206.138462"
+	payload := strings.Join([]string{
+		"_link=" + shared + "\tunique_id=lk_a_to_x\ttarget_event=evt_x\ttarget_unique_id=eo_nbr_x\tstrength=0.750000\tcategory=supplies_to",
+		"_linktag\tevent_id=" + shared + "\tunique=lk_a_to_x\tfreq=1\tvalue=endpoint_a=eo_seed_a",
+		"_link=" + shared + "\tunique_id=lk_b_to_a\ttarget_event=evt_b\ttarget_unique_id=eo_nbr_b\tstrength=0.250000\tcategory=supplies_to",
+		"_linktag\tevent_id=" + shared + "\tunique=lk_b_to_a\tfreq=1\tvalue=endpoint_a=eo_nbr_b",
+	}, "\n")
+
+	msg := buildMinimalMessage(
+		"mem@gateway.example.com",
+		"client@gateway.example.com",
+		header,
+		1001,
+		0,
+		payload,
+	)
+	decoded, err := DecodeMessage(msg)
+	if err != nil {
+		t.Fatalf("DecodeMessage() error = %v", err)
+	}
+	if decoded.Event == nil || len(decoded.Event.Links) != 2 {
+		t.Fatalf("Links count = %d, want 2 (shared _link id must not collapse rows)", len(decoded.Event.Links))
+	}
+	byUID := map[string]Linked{}
+	for _, lk := range decoded.Event.Links {
+		byUID[lk.UniqueId] = lk
+	}
+	out := byUID["lk_a_to_x"]
+	if out.SourceUniqueId != "eo_seed_a" || out.TargetUniqueId != "eo_nbr_x" || out.Strength != 0.75 {
+		t.Errorf("outbound Linked = %+v", out)
+	}
+	if len(out.Tags) != 1 || out.Tags[0].Key != "endpoint_a" || out.Tags[0].Value != "eo_seed_a" {
+		t.Errorf("outbound tags = %+v", out.Tags)
+	}
+	inb := byUID["lk_b_to_a"]
+	if inb.SourceUniqueId != "eo_seed_a" || inb.TargetUniqueId != "eo_nbr_b" || inb.Strength != 0.25 {
+		t.Errorf("inbound-as-view Linked = %+v", inb)
+	}
+	if len(inb.Tags) != 1 || inb.Tags[0].Value != "eo_nbr_b" {
+		t.Errorf("inbound tags = %+v (must key _linktag by unique=)", inb.Tags)
 	}
 }
