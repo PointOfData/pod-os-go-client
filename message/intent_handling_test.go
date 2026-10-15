@@ -1160,6 +1160,48 @@ func TestDecodeMessage_GetEventsForTagsResponse_LinksPopulateUniqueIdA(t *testin
 	}
 }
 
+func TestDecodeLinked_GetEventsForTagsSharedLinkEventId(t *testing.T) {
+	header := "_type=events_for_tag\t_status=OK\t_count=1"
+	shared := "+1792088467.007218"
+	payload := strings.Join([]string{
+		"_event_id=evt_a\tunique_id=eo_seed_a\ttag:1:_unique_id=eo_seed_a",
+		"_link=" + shared + "\tsource=evt_a\tsource_unique_id=eo_seed_a\ttarget=evt_x\ttarget_unique_id=eo_nbr_x\tstrength=0.750000\tcategory=supplies_to\tunique_id=lk_a_to_x",
+		"_link=" + shared + "\tsource=evt_a\tsource_unique_id=eo_seed_a\ttarget=evt_b\ttarget_unique_id=eo_nbr_b\tstrength=0.250000\tcategory=supplies_to\tunique_id=lk_b_to_a",
+	}, "\n")
+
+	msg := buildMinimalMessage(
+		"mem@gateway.example.com",
+		"client@gateway.example.com",
+		header,
+		1001,
+		0,
+		payload,
+	)
+	decoded, err := DecodeMessage(msg)
+	if err != nil {
+		t.Fatalf("DecodeMessage() error = %v", err)
+	}
+	if len(decoded.Response.EventRecords) != 1 {
+		t.Fatalf("EventRecords count = %d, want 1", len(decoded.Response.EventRecords))
+	}
+	event := decoded.Response.EventRecords[0]
+	if len(event.Links) != 2 {
+		t.Fatalf("Links count = %d, want 2 (shared _link id must not collapse GFT rows)", len(event.Links))
+	}
+	byUID := map[string]Linked{}
+	for _, lk := range event.Links {
+		byUID[lk.UniqueId] = lk
+	}
+	out := byUID["lk_a_to_x"]
+	if out.SourceUniqueId != "eo_seed_a" || out.TargetUniqueId != "eo_nbr_x" || out.Strength != 0.75 {
+		t.Errorf("outbound GFT Linked = %+v", out)
+	}
+	inb := byUID["lk_b_to_a"]
+	if inb.SourceUniqueId != "eo_seed_a" || inb.TargetUniqueId != "eo_nbr_b" || inb.Strength != 0.25 {
+		t.Errorf("inbound-as-view GFT Linked = %+v", inb)
+	}
+}
+
 func TestDecodeMessage_GetEventResponse_LinksPopulateUniqueIdA(t *testing.T) {
 	header := "_type=get\t_status=OK\t_event_id=evt1\t_unique_id=src_uid"
 	payload := "_link=link1\ttarget_event=evt2\ttarget_unique_id=tgt_uid\tstrength=0.9\tcategory=describes"

@@ -142,9 +142,14 @@ func parseGetEventsForTagsPayload(msg *Message) (eventResults []EventFields, ok 
 		case strings.HasPrefix(line, "_link="):
 			linkId, link := parseLinkLine(line)
 			if linkId != "" && link != nil {
-				linksMap[linkId] = link
+				// Prefer unique_id: ENM may reuse one _link event id for both viewer rows.
+				mapKey := linkId
+				if link.UniqueId != "" {
+					mapKey = "u:" + link.UniqueId
+				}
+				linksMap[mapKey] = link
 				if link.SourceId != "" {
-					linksBySource[link.SourceId] = append(linksBySource[link.SourceId], linkId)
+					linksBySource[link.SourceId] = append(linksBySource[link.SourceId], mapKey)
 				}
 			}
 
@@ -182,14 +187,17 @@ func parseGetEventsForTagsPayload(msg *Message) (eventResults []EventFields, ok 
 		linkIds := linksBySource[eventId]
 		links := make([]Linked, 0, len(linkIds))
 
-		for _, linkId := range linkIds {
-			link := linksMap[linkId]
+		for _, mapKey := range linkIds {
+			link := linksMap[mapKey]
 			if link == nil {
 				continue
 			}
 
-			// Attach link tags (O(1) lookup)
-			if tags, exists := linkTagsMap[linkId]; exists {
+			// Attach link tags (O(1) lookup). GFT _linktag= is keyed by link event id.
+			tagKey := link.Id
+			if tags, exists := linkTagsMap[tagKey]; exists {
+				link.Tags = tags
+			} else if tags, exists := linkTagsMap[mapKey]; exists {
 				link.Tags = tags
 			}
 
