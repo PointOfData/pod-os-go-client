@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -31,13 +33,13 @@ func init() {
 //   - Engineers: via the Error()/String() output on ValidationErrors (terminal-friendly)
 //   - LLMs: via the LLMJson() output on ValidationErrors (structured JSON for prompt injection)
 type ValidationError struct {
-	Severity    string   // "error" or "warn"
-	Intent      string   // Intent name, e.g. "LinkEvent"
-	Field       string   // Go struct dot-path: "NeuralMemory.Link.Category"
-	WireField   string   // Wire protocol key: "category"
-	Rule        string   // "required", "one_of_required", "format", "nil_struct",
-	             //        "header_missing", "header_value", "payload_type",
-	             //        "payload_format", "semantic", "uncovered"
+	Severity  string // "error" or "warn"
+	Intent    string // Intent name, e.g. "LinkEvent"
+	Field     string // Go struct dot-path: "NeuralMemory.Link.Category"
+	WireField string // Wire protocol key: "category"
+	Rule      string // "required", "one_of_required", "format", "nil_struct",
+	//        "header_missing", "header_value", "payload_type",
+	//        "payload_format", "semantic", "uncovered"
 	Message     string   // Human-readable description of what is wrong
 	Fix         string   // Concrete remediation step in plain English
 	ExampleCode string   // Minimal Go snippet showing a correct value
@@ -176,12 +178,12 @@ const sysSpecialID = "$sys"
 
 // Owner/Id semantic guidance (Evolutionary Neural Memory).
 const (
-	guidanceOwnerCreate = "Owner is the entity that created the event: Event.Owner must be a pre-existing internal Event.Id in this database or $sys; Event.OwnerUniqueID must be a pre-existing Event.UniqueId."
-	guidanceOwnerApply  = "Owner is the creating entity (may differ from the target Id): Event.Owner must be a pre-existing internal Event.Id in this database (not $sys); Event.OwnerUniqueID must be a pre-existing Event.UniqueId."
-	guidanceIdApply     = "Event.Id or Event.UniqueId identifies the pre-existing target event in this database to which tags or payload are applied ($sys is not an individual event)."
-	guidanceIdLookup    = "Event.Id must be a pre-existing internal Event.Id or $sys; Event.UniqueId must be a pre-existing Event.UniqueId in this database."
-	guidanceOwnerFilter = "Owner filters the tag search: GetEventsForTags.Owner must be a pre-existing internal Event.Id or $sys; GetEventsForTags.OwnerUniqueID must be a pre-existing Event.UniqueId."
-	guidanceIdCreate    = "Event.Id is AIP-generated at storage time (time+location); set Event.UniqueId for a developer-controlled identifier known before storage."
+	guidanceOwnerCreate  = "Owner is the entity that created the event: Event.Owner must be a pre-existing internal Event.Id in this database or $sys; Event.OwnerUniqueID must be a pre-existing Event.UniqueId."
+	guidanceOwnerApply   = "Owner is the creating entity (may differ from the target Id): Event.Owner must be a pre-existing internal Event.Id in this database (not $sys); Event.OwnerUniqueID must be a pre-existing Event.UniqueId."
+	guidanceIdApply      = "Event.Id or Event.UniqueId identifies the pre-existing target event in this database to which tags or payload are applied ($sys is not an individual event)."
+	guidanceIdLookup     = "Event.Id must be a pre-existing internal Event.Id or $sys; Event.UniqueId must be a pre-existing Event.UniqueId in this database."
+	guidanceOwnerFilter  = "Owner filters the tag search: GetEventsForTags.Owner must be a pre-existing internal Event.Id or $sys; GetEventsForTags.OwnerUniqueID must be a pre-existing Event.UniqueId."
+	guidanceIdCreate     = "Event.Id is AIP-generated at storage time (time+location); set Event.UniqueId for a developer-controlled identifier known before storage."
 	guidanceLinkIdCreate = "NeuralMemory.Link.Id is AIP-generated at storage time; set NeuralMemory.Link.UniqueId for a developer-controlled link identifier."
 )
 
@@ -331,14 +333,14 @@ var intentValidators = map[string]func(*Message) ValidationErrors{
 	"StoreBatchLinksResponse":  validateResponseIntent,
 
 	// Gateway / Actor
-	"GatewayId":      validateGatewayId,
+	"GatewayId":        validateGatewayId,
 	"GatewayStreamOn":  validateGatewayStream,
 	"GatewayStreamOff": validateGatewayStream,
-	"ActorRequest":   validateActorRequest,
-	"ActorResponse":  validateActorResponse,
-	"ActorReport":    validateActorReport,
-	"Status":         validateStatus,
-	"StatusRequest":  validateStatusRequest,
+	"ActorRequest":     validateActorRequest,
+	"ActorResponse":    validateActorResponse,
+	"ActorReport":      validateActorReport,
+	"Status":           validateStatus,
+	"StatusRequest":    validateStatusRequest,
 }
 
 // =============================================================================
@@ -1319,6 +1321,17 @@ func hasHeader(h map[string]string, key string) bool {
 	return ok && v != ""
 }
 
+// wireStrengthRejected is true when a present strength is 0, -0, NaN, or ±Inf.
+// Forms such as "0.0", "+0", and "-0" count as zero. Non-numeric text is not
+// reported here; a missing field is reported separately by hasHeader.
+func wireStrengthRejected(v string) bool {
+	f, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
+	if err != nil {
+		return false
+	}
+	return f == 0 || math.IsNaN(f) || math.IsInf(f, 0)
+}
+
 // validateWireHeader performs Stage 2 validation: per-intent header field checks.
 func validateWireHeader(messageType int, h map[string]string, payloadLength int64) ValidationErrors {
 	const ctx = "wire"
@@ -1562,6 +1575,21 @@ func validateNeuralMemoryRequestHeader(cmd string, h map[string]string, payloadL
 			errs = append(errs, errorf("error", ctx, "NeuralMemory.Link.StrengthB", "strength_b", "header_missing",
 				"LinkEvent header is missing strength_b.", "Set NeuralMemory.Link.StrengthB.",
 				`msg.NeuralMemory.Link.StrengthB = 1.0`,
+				"message/header.go:LinkEventsMessageHeader"))
+		}
+		for _, field := range []string{"strength_a", "strength_b"} {
+			v, ok := h[field]
+			if !ok || strings.TrimSpace(v) == "" || !wireStrengthRejected(v) {
+				continue
+			}
+			goField := "StrengthA"
+			if field == "strength_b" {
+				goField = "StrengthB"
+			}
+			errs = append(errs, errorf("error", ctx, "NeuralMemory.Link."+goField, field, "header_value",
+				field+" must be a finite non-zero number (positive and negative values are allowed).",
+				"Set "+field+" to a finite non-zero strength such as 1.0 or -1.0.",
+				"msg.NeuralMemory.Link."+goField+" = 1.0",
 				"message/header.go:LinkEventsMessageHeader"))
 		}
 		if !hasHeader(h, "category") {

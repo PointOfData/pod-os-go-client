@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"math"
 	"reflect"
 	"strconv"
 	"strings"
@@ -111,22 +112,50 @@ func FormatBatchEventsPayload(events []BatchEventSpec) string {
 	return result.String()
 }
 
+// linkStrengthRejected reports a strength the actor will not store.
+// Zero and negative zero compare equal. NaN and infinities are not usable weights.
+func linkStrengthRejected(v float64) bool {
+	return v == 0 || math.IsNaN(v) || math.IsInf(v, 0)
+}
+
+// requireLinkWireFields rejects a link that would be dropped by the actor.
+// strength_a and strength_b must be finite and non-zero (positive or negative).
+// category must be non-empty. A missing field or a strength of 0 is not stored.
+func requireLinkWireFields(link *LinkFields, where string) error {
+	if link == nil {
+		return EncodeErrorWithField(ErrCodeEncodeInvalidData, where+": link is missing; strength_a, strength_b, and category are required", "link")
+	}
+	if linkStrengthRejected(link.StrengthA) {
+		return EncodeErrorWithField(ErrCodeEncodeInvalidData, where+": strength_a must be a finite non-zero number (positive and negative values are allowed)", "strength_a")
+	}
+	if linkStrengthRejected(link.StrengthB) {
+		return EncodeErrorWithField(ErrCodeEncodeInvalidData, where+": strength_b must be a finite non-zero number (positive and negative values are allowed)", "strength_b")
+	}
+	if link.Category == "" {
+		return EncodeErrorWithField(ErrCodeEncodeInvalidData, where+": category is required", "category")
+	}
+	return nil
+}
+
 // FormatBatchLinkEventsPayload formats a slice of BatchLinkEventSpec into the payload format required for BatchLinkEvents Intent.
 // Each event is formatted as a tab-separated line using Pod-OS socket field names from struct tags.
 // Events are joined with newlines (\n).
 //
 // Parameters: events []BatchLinkEventSpec - The batch link event specifications to format
 //
-// Returns: string - The formatted payload string ready for use in Message.PayloadData
-func FormatBatchLinkEventsPayload(events []BatchLinkEventSpec) string {
+// Returns the formatted payload string, or an error when strength_a or strength_b is zero or non-finite, or category is empty.
+func FormatBatchLinkEventsPayload(events []BatchLinkEventSpec) (string, error) {
 	if len(events) == 0 {
-		return ""
+		return "", nil
 	}
 
 	var result strings.Builder
 	result.Grow(len(events) * 200) // Estimate ~200 chars per event
 
 	for i, event := range events {
+		if err := requireLinkWireFields(&event.Link, fmt.Sprintf("batch link %d", i)); err != nil {
+			return "", err
+		}
 		if i > 0 {
 			result.WriteByte('\n')
 		}
@@ -135,7 +164,7 @@ func FormatBatchLinkEventsPayload(events []BatchLinkEventSpec) string {
 		result.WriteString(strings.Join(fields, "\t"))
 	}
 
-	return result.String()
+	return result.String(), nil
 }
 
 // formatBatchLinkEventSpecFields formats a BatchLinkEventSpec into Pod-OS socket format using struct tags
@@ -177,7 +206,7 @@ func formatBatchLinkEventSpecFields(spec BatchLinkEventSpec) []string {
 		if socketName == "" {
 			continue
 		}
-		if value.IsZero() && socketName != "strength_a" && socketName != "strength_b" {
+		if value.IsZero() {
 			continue
 		}
 		fieldValue := formatFieldValue(field.Type, value.Interface())
@@ -322,6 +351,15 @@ func EncodeMessage(msg *Message, conversationUuid string) (*SocketMessage, error
 		}
 	}
 
+	if msg.Intent.Name == IntentType.LinkEvent.Name {
+		if msg.NeuralMemory == nil || msg.NeuralMemory.Link == nil {
+			return nil, EncodeErrorWithField(ErrCodeEncodeInvalidData, "LinkEvent requires strength_a, strength_b, and category", "link")
+		}
+		if err := requireLinkWireFields(msg.NeuralMemory.Link, "LinkEvent"); err != nil {
+			return nil, err
+		}
+	}
+
 	// Construct Header.
 	messageHeader := ConstructHeader(msg, msg.Intent, conversationUuid)
 
@@ -395,7 +433,10 @@ func EncodeMessage(msg *Message, conversationUuid string) (*SocketMessage, error
 			// Try type assertion for []BatchLinkEventSpec first
 			if links, ok := payloadData.([]BatchLinkEventSpec); ok {
 				// Convert []BatchLinkEventSpec to formatted string
-				formattedPayload := FormatBatchLinkEventsPayload(links)
+				formattedPayload, err := FormatBatchLinkEventsPayload(links)
+				if err != nil {
+					return nil, err
+				}
 				dataBytes = append(make([]byte, 0, len(formattedPayload)), dataBytes...)
 				dataBytes = append(dataBytes, []byte(formattedPayload)...) //encoding is utf-8
 			} else if str, ok := payloadData.(string); ok {

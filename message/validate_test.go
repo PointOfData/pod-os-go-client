@@ -393,11 +393,11 @@ func TestValidate_StoreBatchEvents(t *testing.T) {
 	}
 
 	tests := []struct {
-		name           string
-		msg            *Message
-		wantRule       string
-		wantFieldPfx   string // containsFieldPrefix check
-		wantOK         bool
+		name         string
+		msg          *Message
+		wantRule     string
+		wantFieldPfx string // containsFieldPrefix check
+		wantOK       bool
 	}{
 		{
 			name: "valid/single record",
@@ -416,13 +416,13 @@ func TestValidate_StoreBatchEvents(t *testing.T) {
 			wantOK: true,
 		},
 		{
-			name: "nil NeuralMemory",
-			msg:  &Message{Envelope: base()},
+			name:     "nil NeuralMemory",
+			msg:      &Message{Envelope: base()},
 			wantRule: "required", wantFieldPfx: "NeuralMemory.BatchEvents",
 		},
 		{
-			name: "empty BatchEvents",
-			msg:  &Message{Envelope: base(), NeuralMemory: &NeuralMemoryFields{}},
+			name:     "empty BatchEvents",
+			msg:      &Message{Envelope: base(), NeuralMemory: &NeuralMemoryFields{}},
 			wantRule: "required", wantFieldPfx: "NeuralMemory.BatchEvents",
 		},
 		{
@@ -508,11 +508,11 @@ func TestValidate_StoreBatchTags(t *testing.T) {
 	validTags := TagList{{Key: "category", Value: "value1"}}
 
 	tests := []struct {
-		name        string
-		msg         *Message
-		wantRule    string
-		wantField   string
-		wantOK      bool
+		name      string
+		msg       *Message
+		wantRule  string
+		wantField string
+		wantOK    bool
 	}{
 		{
 			name:   "valid/id+owner+tags",
@@ -1461,19 +1461,19 @@ func TestValidateRawMessage_NeuralMemoryRequests(t *testing.T) {
 	}{
 		// ---- missing _db_cmd ----
 		{
-			name:     "missing _db_cmd",
-			header:   "timestamp=+1", msgType: 1000,
+			name:   "missing _db_cmd",
+			header: "timestamp=+1", msgType: 1000,
 			wantRule: "header_missing",
 		},
 		// ---- store ----
 		{
-			name:   "store/valid",
-			header: "_db_cmd=store\ttimestamp=+1234567890.123456",
+			name:    "store/valid",
+			header:  "_db_cmd=store\ttimestamp=+1234567890.123456",
 			msgType: 1000, wantOK: true,
 		},
 		{
-			name:     "store/missing timestamp",
-			header:   "_db_cmd=store", msgType: 1000,
+			name:   "store/missing timestamp",
+			header: "_db_cmd=store", msgType: 1000,
 			wantRule: "header_missing",
 		},
 		// ---- store_batch ----
@@ -1481,11 +1481,11 @@ func TestValidateRawMessage_NeuralMemoryRequests(t *testing.T) {
 			name:   "store_batch/valid with payload",
 			header: "_db_cmd=store_batch", msgType: 1000,
 			payload: "timestamp=+1\towner=sys\tloc=T\tloc_delim=|",
-			wantOK: true,
+			wantOK:  true,
 		},
 		{
-			name:     "store_batch/empty payload",
-			header:   "_db_cmd=store_batch", msgType: 1000,
+			name:   "store_batch/empty payload",
+			header: "_db_cmd=store_batch", msgType: 1000,
 			wantRule: "required",
 		},
 		// ---- tag_store_batch ----
@@ -1502,13 +1502,13 @@ func TestValidateRawMessage_NeuralMemoryRequests(t *testing.T) {
 			header: "_db_cmd=tag_store_batch\tevent_id=eid\towner_unique_id=ouid", msgType: 1000, wantOK: true,
 		},
 		{
-			name:     "tag_store_batch/missing event id",
-			header:   "_db_cmd=tag_store_batch\towner=sys", msgType: 1000,
+			name:   "tag_store_batch/missing event id",
+			header: "_db_cmd=tag_store_batch\towner=sys", msgType: 1000,
 			wantRule: "header_missing",
 		},
 		{
-			name:     "tag_store_batch/missing owner",
-			header:   "_db_cmd=tag_store_batch\tevent_id=eid", msgType: 1000,
+			name:   "tag_store_batch/missing owner",
+			header: "_db_cmd=tag_store_batch\tevent_id=eid", msgType: 1000,
 			wantRule: "header_missing",
 		},
 		// ---- get ----
@@ -1521,8 +1521,8 @@ func TestValidateRawMessage_NeuralMemoryRequests(t *testing.T) {
 			header: "_db_cmd=get\tunique_id=uid", msgType: 1000, wantOK: true,
 		},
 		{
-			name:     "get/missing id",
-			header:   "_db_cmd=get", msgType: 1000,
+			name:   "get/missing id",
+			header: "_db_cmd=get", msgType: 1000,
 			wantRule: "header_missing",
 		},
 		// ---- events_for_tag ----
@@ -1537,37 +1537,70 @@ func TestValidateRawMessage_NeuralMemoryRequests(t *testing.T) {
 		},
 		// ---- link ----
 		{
-			name:   "link/valid with event ids",
-			header: "_db_cmd=link\tevent_id_a=a\tevent_id_b=b\tcategory=c\tstrength_a=1\tstrength_b=1\ttimestamp=+1\towner_event_id=o",
+			name:    "link/valid with event ids",
+			header:  "_db_cmd=link\tevent_id_a=a\tevent_id_b=b\tcategory=c\tstrength_a=1\tstrength_b=1\ttimestamp=+1\towner_event_id=o",
 			msgType: 1000, wantOK: true,
 		},
 		{
-			name:   "link/valid with unique ids",
-			header: "_db_cmd=link\tunique_id_a=ua\tunique_id_b=ub\tcategory=c\tstrength_a=1\tstrength_b=1\ttimestamp=+1\towner_event_id=o",
+			name:    "link/valid with unique ids",
+			header:  "_db_cmd=link\tunique_id_a=ua\tunique_id_b=ub\tcategory=c\tstrength_a=1\tstrength_b=1\ttimestamp=+1\towner_event_id=o",
 			msgType: 1000, wantOK: true,
 		},
 		{
-			name:     "link/missing strength_a",
-			header:   "_db_cmd=link\tevent_id_a=a\tevent_id_b=b\tcategory=c\tstrength_b=1\ttimestamp=+1\towner_event_id=o",
-			msgType:  1000,
+			name:    "link/negative strength is valid",
+			header:  "_db_cmd=link\tevent_id_a=a\tevent_id_b=b\tcategory=c\tstrength_a=-0.5\tstrength_b=1\ttimestamp=+1\towner_event_id=o",
+			msgType: 1000, wantOK: true,
+		},
+		{
+			name:      "link/zero strength_a",
+			header:    "_db_cmd=link\tevent_id_a=a\tevent_id_b=b\tcategory=c\tstrength_a=0\tstrength_b=1\ttimestamp=+1\towner_event_id=o",
+			msgType:   1000,
+			wantRule:  "header_value",
 			wantField: "NeuralMemory.Link.StrengthA",
 		},
 		{
-			name:     "link/missing strength_b",
-			header:   "_db_cmd=link\tevent_id_a=a\tevent_id_b=b\tcategory=c\tstrength_a=1\ttimestamp=+1\towner_event_id=o",
-			msgType:  1000,
+			name:      "link/zero strength_b decimal",
+			header:    "_db_cmd=link\tevent_id_a=a\tevent_id_b=b\tcategory=c\tstrength_a=1\tstrength_b=0.0\ttimestamp=+1\towner_event_id=o",
+			msgType:   1000,
+			wantRule:  "header_value",
 			wantField: "NeuralMemory.Link.StrengthB",
 		},
 		{
-			name:     "link/missing category",
-			header:   "_db_cmd=link\tevent_id_a=a\tevent_id_b=b\tstrength_a=1\tstrength_b=1\ttimestamp=+1\towner_event_id=o",
-			msgType:  1000,
+			name:      "link/negative zero strength_a",
+			header:    "_db_cmd=link\tevent_id_a=a\tevent_id_b=b\tcategory=c\tstrength_a=-0\tstrength_b=-1\ttimestamp=+1\towner_event_id=o",
+			msgType:   1000,
+			wantRule:  "header_value",
+			wantField: "NeuralMemory.Link.StrengthA",
+		},
+		{
+			name:      "link/NaN strength_a",
+			header:    "_db_cmd=link\tevent_id_a=a\tevent_id_b=b\tcategory=c\tstrength_a=NaN\tstrength_b=1\ttimestamp=+1\towner_event_id=o",
+			msgType:   1000,
+			wantRule:  "header_value",
+			wantField: "NeuralMemory.Link.StrengthA",
+		},
+		{
+			name:      "link/missing strength_a",
+			header:    "_db_cmd=link\tevent_id_a=a\tevent_id_b=b\tcategory=c\tstrength_b=1\ttimestamp=+1\towner_event_id=o",
+			msgType:   1000,
+			wantField: "NeuralMemory.Link.StrengthA",
+		},
+		{
+			name:      "link/missing strength_b",
+			header:    "_db_cmd=link\tevent_id_a=a\tevent_id_b=b\tcategory=c\tstrength_a=1\ttimestamp=+1\towner_event_id=o",
+			msgType:   1000,
+			wantField: "NeuralMemory.Link.StrengthB",
+		},
+		{
+			name:      "link/missing category",
+			header:    "_db_cmd=link\tevent_id_a=a\tevent_id_b=b\tstrength_a=1\tstrength_b=1\ttimestamp=+1\towner_event_id=o",
+			msgType:   1000,
 			wantField: "NeuralMemory.Link.Category",
 		},
 		{
-			name:     "link/missing timestamp",
-			header:   "_db_cmd=link\tevent_id_a=a\tevent_id_b=b\tcategory=c\tstrength_a=1\tstrength_b=1\towner_event_id=o",
-			msgType:  1000,
+			name:      "link/missing timestamp",
+			header:    "_db_cmd=link\tevent_id_a=a\tevent_id_b=b\tcategory=c\tstrength_a=1\tstrength_b=1\towner_event_id=o",
+			msgType:   1000,
 			wantField: "NeuralMemory.Link.Timestamp",
 		},
 		{
@@ -1592,8 +1625,8 @@ func TestValidateRawMessage_NeuralMemoryRequests(t *testing.T) {
 			header: "_db_cmd=unlink\tunique_id=link-uid", msgType: 1000, wantOK: true,
 		},
 		{
-			name:     "unlink/missing id",
-			header:   "_db_cmd=unlink", msgType: 1000,
+			name:   "unlink/missing id",
+			header: "_db_cmd=unlink", msgType: 1000,
 			wantRule: "header_missing",
 		},
 		// ---- link_batch ----
@@ -1601,11 +1634,11 @@ func TestValidateRawMessage_NeuralMemoryRequests(t *testing.T) {
 			name:   "link_batch/valid with payload",
 			header: "_db_cmd=link_batch", msgType: 1000,
 			payload: "event_id_a=a\tevent_id_b=b\tcategory=c",
-			wantOK: true,
+			wantOK:  true,
 		},
 		{
-			name:     "link_batch/empty payload",
-			header:   "_db_cmd=link_batch", msgType: 1000,
+			name:   "link_batch/empty payload",
+			header: "_db_cmd=link_batch", msgType: 1000,
 			wantRule: "required",
 		},
 	}
@@ -1627,6 +1660,33 @@ func TestValidateRawMessage_NeuralMemoryRequests(t *testing.T) {
 				assertField(t, errs, tt.wantField, tt.name)
 			}
 		})
+	}
+}
+
+func TestValidateRawMessage_ZeroStrengthExampleNamesTheField(t *testing.T) {
+	defer withValidation(t)()
+
+	raw := rawMsg("mem@zeroth.pod-os.com", "test@zeroth.pod-os.com",
+		"_db_cmd=link\tevent_id_a=a\tevent_id_b=b\tcategory=c\tstrength_a=0\tstrength_b=0.0\ttimestamp=+1\towner_event_id=o",
+		1000, "")
+	errs := ValidateRawMessage(raw)
+
+	want := map[string]string{
+		"NeuralMemory.Link.StrengthA": "msg.NeuralMemory.Link.StrengthA = 1.0",
+		"NeuralMemory.Link.StrengthB": "msg.NeuralMemory.Link.StrengthB = 1.0",
+	}
+	for _, e := range errs {
+		example, ok := want[e.Field]
+		if !ok || e.Rule != "header_value" {
+			continue
+		}
+		if e.ExampleCode != example {
+			t.Errorf("example for %s = %q, want %q", e.Field, e.ExampleCode, example)
+		}
+		delete(want, e.Field)
+	}
+	for field := range want {
+		t.Errorf("missing header_value error for %s:\n%s", field, errs.Error())
 	}
 }
 
@@ -1707,8 +1767,8 @@ func TestValidateRawMessage_NeuralMemoryResponses(t *testing.T) {
 			wantOK: true,
 		},
 		{
-			name:   "brief_hit response/no _status (WARN, not ERROR)",
-			header: "_type=events_for_tag",
+			name:     "brief_hit response/no _status (WARN, not ERROR)",
+			header:   "_type=events_for_tag",
 			wantWarn: true,
 		},
 	}
@@ -1756,69 +1816,69 @@ func TestValidateRawMessage_NonNeuralMemoryIntents(t *testing.T) {
 		// GatewayId (5)
 		{
 			name: "GatewayId/valid",
-			to: gw, from: cl,
+			to:   gw, from: cl,
 			header: "id:name=TestClient", msgType: 5, wantOK: true,
 		},
 		{
 			name: "GatewayId/missing id:name",
-			to: gw, from: cl,
+			to:   gw, from: cl,
 			header: "", msgType: 5, wantRule: "header_missing",
 		},
 		// GatewayStreamOn (10)
 		{
 			name: "GatewayStreamOn/valid empty header",
-			to: gw, from: cl,
+			to:   gw, from: cl,
 			header: "", msgType: 10, wantOK: true,
 		},
 		{
 			name: "GatewayStreamOn/valid with msg_id",
-			to: gw, from: cl,
+			to:   gw, from: cl,
 			header: "_msg_id=abc-123", msgType: 10, wantOK: true,
 		},
 		// GatewayStreamOff (9)
 		{
 			name: "GatewayStreamOff/valid",
-			to: gw, from: cl,
+			to:   gw, from: cl,
 			header: "", msgType: 9, wantOK: true,
 		},
 		// ActorRequest (4)
 		{
 			name: "ActorRequest/valid",
-			to: "actor@zeroth.pod-os.com", from: cl,
+			to:   "actor@zeroth.pod-os.com", from: cl,
 			header: "_type=status", msgType: 4, wantOK: true,
 		},
 		{
 			name: "ActorRequest/missing _type=status",
-			to: "actor@zeroth.pod-os.com", from: cl,
+			to:   "actor@zeroth.pod-os.com", from: cl,
 			header: "", msgType: 4, wantRule: "header_missing",
 		},
 		{
 			name: "ActorRequest/_type wrong value",
-			to: "actor@zeroth.pod-os.com", from: cl,
+			to:   "actor@zeroth.pod-os.com", from: cl,
 			header: "_type=wrong", msgType: 4, wantRule: "header_missing",
 		},
 		// Status (3)
 		{
 			name: "Status/valid empty",
-			to: cl, from: "actor@zeroth.pod-os.com",
+			to:   cl, from: "actor@zeroth.pod-os.com",
 			header: "", msgType: 3, wantOK: true,
 		},
 		// ActorResponse (30)
 		{
 			name: "ActorResponse/valid",
-			to: cl, from: "actor@zeroth.pod-os.com",
+			to:   cl, from: "actor@zeroth.pod-os.com",
 			header: "_status=OK\t_msg=done", msgType: 30, wantOK: true,
 		},
 		// ActorReport (19)
 		{
 			name: "ActorReport/valid",
-			to: cl, from: "actor@zeroth.pod-os.com",
+			to:   cl, from: "actor@zeroth.pod-os.com",
 			header: "_status=OK\t_msg=healthy", msgType: 19, wantOK: true,
 		},
 		// ActorEcho (2)
 		{
 			name: "ActorEcho/with msg_id",
-			to: "actor@zeroth.pod-os.com", from: cl,
+			to:   "actor@zeroth.pod-os.com", from: cl,
 			header: "_msg_id=echo-123", msgType: 2, wantOK: true,
 		},
 	}

@@ -2,6 +2,7 @@ package message
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 )
@@ -570,7 +571,10 @@ func TestFormatBatchLinkEventsPayload(t *testing.T) {
 		},
 	}
 
-	payload := FormatBatchLinkEventsPayload(links)
+	payload, err := FormatBatchLinkEventsPayload(links)
+	if err != nil {
+		t.Fatalf("FormatBatchLinkEventsPayload() error = %v", err)
+	}
 
 	// Should contain link fields
 	wantContains := []string{
@@ -589,7 +593,7 @@ func TestFormatBatchLinkEventsPayload(t *testing.T) {
 }
 
 func TestFormatBatchLinkEventsPayload_ZeroStrengthB(t *testing.T) {
-	payload := FormatBatchLinkEventsPayload([]BatchLinkEventSpec{{
+	_, err := FormatBatchLinkEventsPayload([]BatchLinkEventSpec{{
 		Event: EventFields{OwnerUniqueID: "art_a", Timestamp: "+1", Location: "WIKI|en", LocationSeparator: "|"},
 		Link: LinkFields{
 			UniqueIdA: "art_a", UniqueIdB: "art_b",
@@ -598,8 +602,82 @@ func TestFormatBatchLinkEventsPayload_ZeroStrengthB(t *testing.T) {
 			OwnerUniqueID: "art_a",
 		},
 	}})
-	if !strings.Contains(payload, "strength_b=0") {
-		t.Errorf("FormatBatchLinkEventsPayload() missing strength_b=0 in payload: %s", payload)
+	if err == nil {
+		t.Fatal("FormatBatchLinkEventsPayload() accepted strength_b=0")
+	}
+}
+
+func TestFormatBatchLinkEventsPayload_NegativeStrength(t *testing.T) {
+	payload, err := FormatBatchLinkEventsPayload([]BatchLinkEventSpec{{
+		Link: LinkFields{
+			EventA: "a", EventB: "b",
+			StrengthA: -0.4, StrengthB: 1.0, Category: "related",
+		},
+	}})
+	if err != nil {
+		t.Fatalf("FormatBatchLinkEventsPayload() error = %v", err)
+	}
+	if !strings.Contains(payload, "strength_a=-0.4") || !strings.Contains(payload, "strength_b=1") || !strings.Contains(payload, "category=related") {
+		t.Errorf("FormatBatchLinkEventsPayload() = %s, want negative strength and category", payload)
+	}
+}
+
+func TestFormatBatchLinkEventsPayload_NonFiniteStrength(t *testing.T) {
+	cases := []LinkFields{
+		{EventA: "a", EventB: "b", StrengthA: math.NaN(), StrengthB: 1, Category: "related"},
+		{EventA: "a", EventB: "b", StrengthA: 1, StrengthB: math.Inf(1), Category: "related"},
+		{EventA: "a", EventB: "b", StrengthA: math.Inf(-1), StrengthB: 1, Category: "related"},
+	}
+	for i, link := range cases {
+		_, err := FormatBatchLinkEventsPayload([]BatchLinkEventSpec{{Link: link}})
+		if err == nil {
+			t.Errorf("case %d: accepted non-finite strength", i)
+		}
+	}
+}
+
+func TestEncodeMessage_LinkEventRejectsZeroStrength(t *testing.T) {
+	msg := &Message{
+		Envelope: Envelope{
+			To:     "mem@zeroth.pod-os.com",
+			From:   "test@zeroth.pod-os.com",
+			Intent: IntentType.LinkEvent,
+		},
+		Event: &EventFields{Owner: "o"},
+		NeuralMemory: &NeuralMemoryFields{Link: &LinkFields{
+			EventA: "a", EventB: "b", StrengthA: -1, StrengthB: 0, Category: "c",
+			Timestamp: "+1", OwnerID: "o", Location: "L", LocationSeparator: "|",
+		}},
+	}
+	if _, err := EncodeMessage(msg, "conv"); err == nil {
+		t.Fatal("EncodeMessage accepted strength_b=0")
+	}
+}
+
+func TestEncodeMessage_LinkEventNegativeStrength(t *testing.T) {
+	defer withValidation(t)()
+
+	msg := &Message{
+		Envelope: Envelope{
+			To:     "mem@zeroth.pod-os.com",
+			From:   "test@zeroth.pod-os.com",
+			Intent: IntentType.LinkEvent,
+		},
+		Event: &EventFields{Owner: "o"},
+		NeuralMemory: &NeuralMemoryFields{Link: &LinkFields{
+			EventA: "a", EventB: "b", StrengthA: -0.5, StrengthB: 1, Category: "c",
+			Timestamp: "+1", OwnerID: "o", Location: "L", LocationSeparator: "|",
+		}},
+	}
+	socket, err := EncodeMessage(msg, "conv")
+	if err != nil {
+		t.Fatalf("EncodeMessage() error = %v", err)
+	}
+	if !strings.Contains(socket.Header, "strength_a=-0.5") || !strings.Contains(socket.Header, "strength_b=1") {
+		t.Errorf("header = %s, want negative strength_a and strength_b", socket.Header)
+	}
+	if errs := ValidateRawMessage(socket.MessageBytes); hasErrors(errs) {
+		t.Errorf("ValidateRawMessage() rejected a negative strength:\n%s", errs.Error())
 	}
 }
 
