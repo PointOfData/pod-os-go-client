@@ -715,6 +715,9 @@ func parseGetEventLinkTagLine(line string) (linkId string, uniqueId string, tag 
 	if freqStr, exists := recordMap["freq"]; exists {
 		tag.Frequency, _ = strconv.Atoi(freqStr)
 	}
+	if ts, exists := recordMap["timestamp"]; exists {
+		tag.Timestamp = ts
+	}
 	if value, exists := recordMap["value"]; exists {
 		if eqIdx := strings.Index(value, "="); eqIdx > 0 {
 			tag.Key = value[:eqIdx]
@@ -740,6 +743,9 @@ func parseGetEventTargetTagLine(line string) (targetEventId string, tag *TagOutp
 	tag = &TagOutput{}
 	if freqStr, exists := recordMap["freq"]; exists {
 		tag.Frequency, _ = strconv.Atoi(freqStr)
+	}
+	if ts, exists := recordMap["timestamp"]; exists {
+		tag.Timestamp = ts
 	}
 	if value, exists := recordMap["value"]; exists {
 		if eqIdx := strings.Index(value, "="); eqIdx > 0 {

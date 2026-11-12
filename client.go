@@ -532,6 +532,49 @@ func (c *Client) connectionLivenessTimeout() time.Duration {
 	return c.cfg.GetConnectionLivenessTimeout()
 }
 
+// AppendResult reports whether AppendTags wrote a new tag version.
+type AppendResult struct {
+	Wrote bool
+}
+
+// AppendTags writes one StoreBatchTags of caller-named keys onto an existing event.
+// actor is the recipient routing identity (name@gateway). Every tag is sent with frequency 1.
+// The batch owner_unique_id is targetUniqueID. A repeated value is a new observation and is written.
+func (c *Client) AppendTags(ctx context.Context, actor, targetUniqueID string, tags []message.Tag) (AppendResult, error) {
+	if c == nil {
+		return AppendResult{}, fmt.Errorf("nil client")
+	}
+	if actor == "" {
+		return AppendResult{}, fmt.Errorf("actor is required")
+	}
+	if targetUniqueID == "" {
+		return AppendResult{}, fmt.Errorf("target unique id is required")
+	}
+	if len(tags) == 0 {
+		return AppendResult{}, fmt.Errorf("tags are required")
+	}
+
+	stored := make(message.TagList, len(tags))
+	for i, tag := range tags {
+		tag.Frequency = 1
+		stored[i] = tag
+	}
+	if _, err := c.SendMessage(ctx, &message.Message{
+		Envelope: message.Envelope{
+			To:     actor,
+			Intent: message.IntentType.StoreBatchTags,
+		},
+		Event: &message.EventFields{
+			UniqueId:      targetUniqueID,
+			OwnerUniqueID: targetUniqueID,
+		},
+		NeuralMemory: &message.NeuralMemoryFields{Tags: stored},
+	}); err != nil {
+		return AppendResult{}, err
+	}
+	return AppendResult{Wrote: true}, nil
+}
+
 // SendMessage sends a message to a Pod-OS actor and returns the response.
 // This method automatically sets the message's ClientName and From address
 // to match this client's identity, ensuring consistency even if the message

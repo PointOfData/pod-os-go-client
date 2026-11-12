@@ -371,6 +371,12 @@ By default, tags come back as frequency plus `key=value`. Both retrieval intents
 - GetEvent tags are ordered by `TagNumber`, the database tag counter.
 - Current Pod-OS builds leave the owner out of GetEvent `tag_format=1` output even when `output_tag_owner` is sent (verified live). Use GetEventsForTags with `BufferFormat="1"` when you need owners.
 
+### Tag version history
+
+A later write of the same key appends a row. The default tag map is the latest value of each key and hides priors. `tag_format=1` and `buffer_format=1` return every version. Order is storage timestamp, then tag number. `message.LatestByKey` is the current map. `message.FieldHistory(tags, field)` zips keys that start with `field + "."`. Facet names are the remainder and are caller-defined. One convention, written together in one `StoreBatchTags`, is `{field}.value`, `{field}.event_timestamp`, `{field}.delta_type`, `{field}.confidence`, `{field}.evidence`, and `{field}.source`. Any other `{field}.{facet}` in that batch is a sighting too.
+
+`get_link_tags=Y` returns the link event's own tags on `Linked.Tags`. `get_target_tags=Y` returns the neighbor event's tags on `Linked.TargetTags`. Run `FieldHistory` on those slices. `get_eo_count` counts events and does not grow with tag versions.
+
 #### Example: GetEvent with tag timestamps
 
 ```go

@@ -96,6 +96,14 @@ for _, tag := range resp.Response.EventRecords[0].Tags {
 
 `Client.SendMessage` routes the owner into `Owner` (event key) or `OwnerUniqueID` according to the request. When decoding raw bytes yourself, call `message.ApplyTagOwnerOutput(req, resp)`. See "Tag Metadata" in `knowledge/docs/Pod-OS-Neural-Memory-Retrieval-Prompts.md` for the rules.
 
+## Tag version history
+
+A later `StoreBatchTags` of the same key appends a version. The default tag map (`tag_format` unset) is the latest value of each key and hides priors. `tag_format=1` and `buffer_format=1` return the full list. Order is storage timestamp, then tag number.
+
+Callers name the field and the facets. A key belongs to a field when it starts with `field + "."`. One convention, not a required schema, is six siblings written in the same batch: `{field}.value`, `{field}.event_timestamp`, `{field}.delta_type`, `{field}.confidence`, `{field}.evidence`, `{field}.source`. Any other `{field}.{facet}` written in that batch is a sighting too.
+
+`message.LatestByKey` collapses a list to the current row per key. `message.FieldHistory` zips one field's facets by version index. `Client.AppendTags` always sends one `StoreBatchTags` with `owner_unique_id` set to the target and frequency 1. A repeated value is a new observation. `get_link_tags=Y` fills `Linked.Tags` (the link's own history). `get_target_tags=Y` fills `Linked.TargetTags` (the neighbor's history). `get_eo_count` counts events and does not grow with tag versions.
+
 ## Knowledge Base
 
 Access embedded Pod-OS documentation:
